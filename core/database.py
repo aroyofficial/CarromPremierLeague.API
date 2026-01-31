@@ -31,7 +31,6 @@ class Database:
         return cls._pool.get_connection()
 
 
-@contextmanager
 def get_db():
     connection = Database.get_connection()
     try:
