@@ -38,7 +38,7 @@ class SeasonRepository:
                 request.name,
                 request.start_date,
                 request.end_date,
-                request.logo_url
+                str(request.logo_url)
             )
         )
 
@@ -91,7 +91,7 @@ class SeasonRepository:
         for key, value in update_data.items():
             if key in field_mapping:
                 fields.append(f"{field_mapping[key]} = %s")
-                values.append(value)
+                values.append(str(value) if key == "logo_url" else value)
 
         if not fields:
             return self.get_by_id(season_id)
@@ -106,6 +106,7 @@ class SeasonRepository:
 
         cursor = self.db.cursor()
         cursor.execute(query, tuple(values))
+        self.db.commit()
 
         return self.get_by_id(season_id)
 
