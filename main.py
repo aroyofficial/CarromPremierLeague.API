@@ -9,6 +9,7 @@ from routes.player_routes import router as player_router
 from routes.country_routes import router as country_router
 from routes.stats_routes import router as stats_router
 from routes.roster_routes import router as roster_router
+from routes.match_routes import router as match_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -24,3 +25,4 @@ app.include_router(player_router)
 app.include_router(country_router)
 app.include_router(stats_router)
 app.include_router(roster_router)
+app.include_router(match_router)
