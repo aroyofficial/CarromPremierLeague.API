@@ -5,7 +5,8 @@ from fastapi import HTTPException
 from schemas.season_schema import (
     SeasonCreateRequest,
     SeasonUpdateRequest,
-    SeasonResponse
+    SeasonResponse,
+    LeagueTableResponse
 )
 from repositories.season_repository import SeasonRepository
 
@@ -68,3 +69,13 @@ class SeasonService:
             raise HTTPException(status_code=400, detail="Failed to delete season")
 
         return {"message": "Season deleted successfully"}
+    
+    def get_league_table(self, season_id: int) -> LeagueTableResponse:
+        if season_id <= 0:
+            raise ValueError("Invalid season id")
+
+        season = self.repository.get_by_id(season_id)
+        if not season:
+            raise ValueError("Season not found")
+
+        return self.repository.get_league_table(season_id)

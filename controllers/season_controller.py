@@ -1,9 +1,12 @@
+from typing import List
+from fastapi import HTTPException
 from repositories.season_repository import SeasonRepository
 from services.season_service import SeasonService
 from schemas.season_schema import (
     SeasonCreateRequest,
     SeasonUpdateRequest,
-    SeasonResponse
+    SeasonResponse,
+    LeagueTableResponse
 )
 
 
@@ -27,3 +30,6 @@ class SeasonController:
 
     def delete(self, season_id: int) -> dict:
         return self.service.delete_season(season_id)
+    
+    def get_league_table(self, season_id: int) -> LeagueTableResponse:
+        return self.service.get_league_table(season_id)

@@ -3,7 +3,9 @@ from typing import Optional, List
 from schemas.season_schema import (
     SeasonCreateRequest,
     SeasonUpdateRequest,
-    SeasonResponse
+    SeasonResponse,
+    LeagueTableResponse,
+    LeagueTableStanding
 )
 
 
@@ -133,3 +135,26 @@ class SeasonRepository:
         cursor = self.db.cursor()
         cursor.execute(query, (name,))
         return cursor.fetchone() is not None
+    
+    def get_league_table(self, season_id: int) -> LeagueTableResponse:
+        cursor = self.db.cursor(dictionary=True)
+
+        cursor.callproc("usp_GetLeagueTable", [season_id])
+
+        result = LeagueTableResponse(standings=[])
+        for res in cursor.stored_results():
+            rows = res.fetchall()
+            for row in rows:
+                result.standings.append(
+                    LeagueTableStanding(
+                        team_id=row["TeamId"],
+                        team_name=row["TeamName"],
+                        matches_played=row.get("MatchesPlayed", 0),
+                        wins=row.get("Wins", 0),
+                        points=row.get("Points", 0),
+                        net_points=row.get("NetPoints", 0),
+                        head_to_head_wins=row.get("HeadToHeadWins", 0),
+                    )
+                )
+
+        return result

@@ -49,7 +49,7 @@ class PlayerService:
             first_name=first_name,
             last_name=last_name,
             date_of_birth=request.date_of_birth,
-            avatar_url=request.avatar_url.strip() if request.avatar_url else None,
+            avatar_url=str(request.avatar_url).strip() if request.avatar_url else None,
             nationality_id=request.nationality_id
         )
 

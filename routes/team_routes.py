@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from typing import List
+
 from schemas.team_schema import (
     TeamCreateRequest,
     TeamUpdateRequest,
@@ -9,6 +10,7 @@ from services.team_service import TeamService
 from repositories.team_repository import TeamRepository
 from controllers.team_controller import TeamController
 from core.database import get_db
+from core.response import ApiResponse
 
 
 router = APIRouter(
@@ -23,33 +25,69 @@ def get_controller(db=Depends(get_db)) -> TeamController:
     return TeamController(service)
 
 
-@router.get("/", response_model=List[TeamResponse])
+@router.get("/", response_model=ApiResponse[List[TeamResponse]])
 def get_all(controller: TeamController = Depends(get_controller)):
-    return controller.get_all()
+    result = controller.get_all()
+
+    return ApiResponse(
+        success=True,
+        message="Teams fetched successfully",
+        data=result
+    )
 
 
-@router.get("/{team_id}", response_model=TeamResponse)
-def get_by_id(team_id: int, controller: TeamController = Depends(get_controller)):
-    return controller.get_by_id(team_id)
+@router.get("/{team_id}", response_model=ApiResponse[TeamResponse])
+def get_by_id(
+    team_id: int,
+    controller: TeamController = Depends(get_controller)
+):
+    result = controller.get_by_id(team_id)
+
+    return ApiResponse(
+        success=True,
+        message="Team fetched successfully",
+        data=result
+    )
 
 
-@router.post("/", response_model=TeamResponse)
+@router.post("/", response_model=ApiResponse[TeamResponse])
 def create(
     request: TeamCreateRequest,
     controller: TeamController = Depends(get_controller)
 ):
-    return controller.create(request)
+    result = controller.create(request)
+
+    return ApiResponse(
+        success=True,
+        message="Team created successfully",
+        data=result
+    )
 
 
-@router.patch("/{team_id}", response_model=TeamResponse)
+@router.patch("/{team_id}", response_model=ApiResponse[TeamResponse])
 def update(
     team_id: int,
     request: TeamUpdateRequest,
     controller: TeamController = Depends(get_controller)
 ):
-    return controller.update(team_id, request)
+    result = controller.update(team_id, request)
+
+    return ApiResponse(
+        success=True,
+        message="Team updated successfully",
+        data=result
+    )
 
 
-@router.delete("/{team_id}")
-def delete(team_id: int, controller: TeamController = Depends(get_controller)):
-    return controller.delete(team_id)
+@router.delete("/{team_id}", response_model=ApiResponse[bool])
+def delete(
+    team_id: int,
+    controller: TeamController = Depends(get_controller)
+):
+    result = controller.delete(team_id)
+
+    return ApiResponse(
+        success=True,
+        message="Team deleted successfully",
+        data=result
+    )

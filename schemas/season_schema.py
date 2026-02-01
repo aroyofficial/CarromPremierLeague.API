@@ -30,3 +30,15 @@ class SeasonResponse(BaseModel):
 
 class SeasonListResponse(BaseModel):
     seasons: List[SeasonResponse]
+
+class LeagueTableStanding(BaseModel):
+    team_id: int
+    team_name: str
+    matches_played: int
+    wins: int
+    points: int
+    net_points: int
+    head_to_head_wins: int
+
+class LeagueTableResponse(BaseModel):
+    standings: List[LeagueTableStanding]

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from typing import List
+
 from repositories.player_repository import PlayerRepository
 from services.player_service import PlayerService
 from controllers.player_controller import PlayerController
@@ -11,6 +12,7 @@ from schemas.player_schema import (
     PlayerResponse
 )
 from core.database import get_db
+from core.response import ApiResponse
 
 
 router = APIRouter(
@@ -27,33 +29,69 @@ def get_controller(db=Depends(get_db)) -> PlayerController:
     return PlayerController(service)
 
 
-@router.get("/", response_model=List[PlayerResponse])
+@router.get("/", response_model=ApiResponse[List[PlayerResponse]])
 def get_all(controller: PlayerController = Depends(get_controller)):
-    return controller.get_all()
+    result = controller.get_all()
+
+    return ApiResponse(
+        success=True,
+        message="Players fetched successfully",
+        data=result
+    )
 
 
-@router.get("/{player_id}", response_model=PlayerResponse)
-def get_by_id(player_id: int, controller: PlayerController = Depends(get_controller)):
-    return controller.get_by_id(player_id)
+@router.get("/{player_id}", response_model=ApiResponse[PlayerResponse])
+def get_by_id(
+    player_id: int,
+    controller: PlayerController = Depends(get_controller)
+):
+    result = controller.get_by_id(player_id)
+
+    return ApiResponse(
+        success=True,
+        message="Player fetched successfully",
+        data=result
+    )
 
 
-@router.post("/", response_model=PlayerResponse)
+@router.post("/", response_model=ApiResponse[PlayerResponse])
 def create(
     request: PlayerCreateRequest,
     controller: PlayerController = Depends(get_controller)
 ):
-    return controller.create(request)
+    result = controller.create(request)
+
+    return ApiResponse(
+        success=True,
+        message="Player created successfully",
+        data=result
+    )
 
 
-@router.patch("/{player_id}", response_model=PlayerResponse)
+@router.patch("/{player_id}", response_model=ApiResponse[PlayerResponse])
 def update(
     player_id: int,
     request: PlayerUpdateRequest,
     controller: PlayerController = Depends(get_controller)
 ):
-    return controller.update(player_id, request)
+    result = controller.update(player_id, request)
+
+    return ApiResponse(
+        success=True,
+        message="Player updated successfully",
+        data=result
+    )
 
 
-@router.delete("/{player_id}")
-def delete(player_id: int, controller: PlayerController = Depends(get_controller)):
-    return controller.delete(player_id)
+@router.delete("/{player_id}", response_model=ApiResponse[bool])
+def delete(
+    player_id: int,
+    controller: PlayerController = Depends(get_controller)
+):
+    result = controller.delete(player_id)
+
+    return ApiResponse(
+        success=True,
+        message="Player deleted successfully",
+        data=result
+    )
