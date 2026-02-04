@@ -7,14 +7,12 @@ class SeasonCreateRequest(BaseModel):
     name: str = Field(..., min_length=3, max_length=255)
     start_date: Optional[date] = None
     end_date: Optional[date] = None
-    logo_url: Optional[HttpUrl] = None
 
 
 class SeasonUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=3, max_length=255)
     start_date: Optional[date] = None
     end_date: Optional[date] = None
-    logo_url: Optional[HttpUrl] = None
 
 
 class SeasonResponse(BaseModel):
@@ -22,7 +20,6 @@ class SeasonResponse(BaseModel):
     name: str
     start_date: Optional[date]
     end_date: Optional[date]
-    logo_url: Optional[str]
 
     class Config:
         from_attributes = True
@@ -41,4 +38,6 @@ class LeagueTableStanding(BaseModel):
     head_to_head_wins: int
 
 class LeagueTableResponse(BaseModel):
+    winner_id: Optional[int] = None
+    season_status: int
     standings: List[LeagueTableStanding]

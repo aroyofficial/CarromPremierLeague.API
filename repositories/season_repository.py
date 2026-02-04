@@ -23,14 +23,13 @@ class SeasonRepository:
             id=row["Id"],
             name=row["Name"],
             start_date=row["StartDate"],
-            end_date=row["EndDate"],
-            logo_url=row["LogoUrl"]
+            end_date=row["EndDate"]
         )
 
     def create(self, request: SeasonCreateRequest) -> SeasonResponse:
         query = """
-            INSERT INTO tblSeasons (Name, StartDate, EndDate, LogoUrl)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO tblSeasons (Name, StartDate, EndDate)
+            VALUES (%s, %s, %s)
         """
 
         cursor = self.db.cursor()
@@ -39,8 +38,7 @@ class SeasonRepository:
             (
                 request.name,
                 request.start_date,
-                request.end_date,
-                str(request.logo_url)
+                request.end_date
             )
         )
 
@@ -49,7 +47,7 @@ class SeasonRepository:
 
     def get_by_id(self, season_id: int) -> Optional[SeasonResponse]:
         query = """
-            SELECT Id, Name, StartDate, EndDate, LogoUrl
+            SELECT Id, Name, StartDate, EndDate
             FROM tblSeasons
             WHERE Id = %s AND Void = 0
         """
@@ -62,7 +60,7 @@ class SeasonRepository:
 
     def get_all(self) -> List[SeasonResponse]:
         query = """
-            SELECT Id, Name, StartDate, EndDate, LogoUrl
+            SELECT Id, Name, StartDate, EndDate
             FROM tblSeasons
             WHERE Void = 0
             ORDER BY Id DESC
@@ -84,7 +82,6 @@ class SeasonRepository:
             "name": "Name",
             "start_date": "StartDate",
             "end_date": "EndDate",
-            "logo_url": "LogoUrl"
         }
 
         fields = []
@@ -138,13 +135,21 @@ class SeasonRepository:
     
     def get_league_table(self, season_id: int) -> LeagueTableResponse:
         cursor = self.db.cursor(dictionary=True)
-
         cursor.callproc("usp_GetLeagueTable", [season_id])
 
-        result = LeagueTableResponse(standings=[])
-        for res in cursor.stored_results():
-            rows = res.fetchall()
-            for row in rows:
+        result = LeagueTableResponse(
+            standings=[],
+            season_status=1
+        )
+
+        result_sets = cursor.stored_results()
+
+        try:
+            league_result = next(result_sets)
+            league_rows = league_result.fetchall()
+
+            for row in league_rows:
+                is_winner = bool(row.get("IsWinner", 0))
                 result.standings.append(
                     LeagueTableStanding(
                         team_id=row["TeamId"],
@@ -152,9 +157,22 @@ class SeasonRepository:
                         matches_played=row.get("MatchesPlayed", 0),
                         wins=row.get("Wins", 0),
                         points=row.get("Points", 0),
-                        net_points=row.get("NetPoints", 0),
-                        head_to_head_wins=row.get("HeadToHeadWins", 0),
+                        net_points=row.get("TotalNetPoints", 0),
+                        head_to_head_wins=row.get("HeadToHeadWins", 0)
                     )
                 )
+                if is_winner:
+                    result.winner_id = int(row["TeamId"])
+        except StopIteration:
+            pass
+
+        try:
+            status_result = next(result_sets)
+            status_row = status_result.fetchone()
+
+            if status_row:
+                result.season_status = int(status_row.get("SeasonStatus"))
+        except StopIteration:
+            pass
 
         return result

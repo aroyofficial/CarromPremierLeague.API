@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+from fastapi.middleware.cors import CORSMiddleware
 
 from core.database import Database
+from core.config import settings
 from core.exceptions import add_exception_handlers
 from routes.season_routes import router as season_router
 from routes.team_routes import router as team_router
@@ -18,6 +20,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 add_exception_handlers(app)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.APP_ALLOWED_HOSTS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(season_router)
 app.include_router(team_router)

@@ -10,6 +10,7 @@ class Settings:
         self.APP_ENV: Literal["dev", "stage", "prod"] = self._get_env("CPL_APP_ENV")  # type: ignore
         self.APP_HOST: str = self._get_env("CPL_APP_HOST")
         self.APP_PORT: int = self._get_int_env("CPL_APP_PORT")
+        self.APP_ALLOWED_HOSTS: list[str] = self._get_env("CPL_APP_ALLOWED_HOSTS").split(",")
 
         self.DB_HOST: str = self._get_env("CPL_DB_HOST")
         self.DB_PORT: int = self._get_int_env("CPL_DB_PORT")
