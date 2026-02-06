@@ -2,6 +2,8 @@ from pydantic import BaseModel, Field, HttpUrl
 from typing import Optional, List
 from datetime import date
 
+from enums.season_status import SeasonStatus
+
 
 class SeasonCreateRequest(BaseModel):
     name: str = Field(..., min_length=3, max_length=255)
@@ -20,6 +22,7 @@ class SeasonResponse(BaseModel):
     name: str
     start_date: Optional[date]
     end_date: Optional[date]
+    status: SeasonStatus
 
     class Config:
         from_attributes = True

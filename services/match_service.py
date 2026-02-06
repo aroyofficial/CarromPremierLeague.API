@@ -2,7 +2,8 @@ from typing import List
 from schemas.match_schema import (
     MatchCreateRequest,
     MatchUpdateRequest,
-    MatchResponse
+    MatchResponse,
+    MatchOrderResponse
 )
 from repositories.match_repository import MatchRepository
 from fastapi import HTTPException
@@ -38,3 +39,6 @@ class MatchService:
         if not self.repository.soft_delete(match_id):
             raise HTTPException(status_code=404, detail="Match not found")
         return True
+    
+    def get_next_match_order(self, season_id: int) -> MatchOrderResponse:
+        return self.repository.get_order(season_id)

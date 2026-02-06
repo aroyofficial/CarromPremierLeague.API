@@ -2,7 +2,8 @@ from typing import Optional, List
 from schemas.match_schema import (
     MatchCreateRequest,
     MatchUpdateRequest,
-    MatchResponse
+    MatchResponse,
+    MatchOrderResponse
 )
 
 
@@ -65,15 +66,15 @@ class MatchRepository:
                 request.team1,
                 request.team2,
                 request.scheduled_date,
-                request.duration,              # None → becomes NULL
-                request.extra,                 # None → becomes NULL
+                request.duration,              
+                request.extra,                 
                 int(request.golden_strike) if request.golden_strike is not None else 0,
-                request.category,
-                request.status,
-                request.order,                 # None → NULL
+                request.category.value,
+                request.status.value,
+                request.order,                 
                 request.season_id,
-                request.net_points,            # None → NULL
-                request.outcome                # None → NULL
+                request.net_points,            
+                request.outcome.value                
             )
         )
 
@@ -161,3 +162,28 @@ class MatchRepository:
         self.db.commit()
 
         return cursor.rowcount > 0
+    
+    def get_order(self, season_id: int) -> MatchOrderResponse:
+        query = """
+            SELECT *
+            FROM (
+                SELECT COALESCE(MAX(tm.`Order`), 0) + 1 AS DesiredOrder
+                FROM tblMatches tm
+                WHERE tm.SeasonId = %s
+                AND tm.Void = 0
+            ) t
+            WHERE EXISTS (
+                SELECT 1
+                FROM tblSeasons ts
+                WHERE ts.Id = %s
+                AND ts.Status <> 3
+            );
+        """
+
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(query, (season_id, season_id,))
+        row = cursor.fetchone()
+
+        if not row or row["DesiredOrder"] is None:
+            raise ValueError("Season not found or already completed")
+        return MatchOrderResponse(order=row["DesiredOrder"])

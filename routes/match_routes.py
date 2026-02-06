@@ -8,7 +8,8 @@ from controllers.match_controller import MatchController
 from schemas.match_schema import (
     MatchCreateRequest,
     MatchUpdateRequest,
-    MatchResponse
+    MatchResponse,
+    MatchOrderResponse
 )
 
 
@@ -24,7 +25,7 @@ def get_controller(db=Depends(get_db)) -> MatchController:
     return MatchController(service)
 
 
-@router.post("/", response_model=ApiResponse[MatchResponse])
+@router.post("", response_model=ApiResponse[MatchResponse])
 def create(request: MatchCreateRequest, controller: MatchController = Depends(get_controller)):
     return ApiResponse(
         success=True,
@@ -34,13 +35,25 @@ def create(request: MatchCreateRequest, controller: MatchController = Depends(ge
 
 
 
-@router.get("/", response_model=ApiResponse[List[MatchResponse]])
+@router.get("", response_model=ApiResponse[List[MatchResponse]])
 def get_all(seasonId: int = None, controller: MatchController = Depends(get_controller)):
     return ApiResponse(
         success=True,
         message="Matches fetched successfully",
         data=controller.get_all(season_id=seasonId)
     )
+
+
+
+@router.get("/next-order", response_model=ApiResponse[MatchOrderResponse])
+def get_next_match_order(seasonId: int, controller: MatchController = Depends(get_controller)):
+    return ApiResponse(
+        success=True,
+        message="Next match order fetched successfully",
+        data=controller.get_next_match_order(seasonId)
+    )
+
+
 
 @router.get("/{match_id}", response_model=ApiResponse[MatchResponse])
 def get_by_id(match_id: int, controller: MatchController = Depends(get_controller)):

@@ -7,6 +7,7 @@ from schemas.season_schema import (
     LeagueTableResponse,
     LeagueTableStanding
 )
+from enums.season_status import SeasonStatus
 
 
 class SeasonRepository:
@@ -23,7 +24,8 @@ class SeasonRepository:
             id=row["Id"],
             name=row["Name"],
             start_date=row["StartDate"],
-            end_date=row["EndDate"]
+            end_date=row["EndDate"],
+            status=SeasonStatus(int(row["Status"]))
         )
 
     def create(self, request: SeasonCreateRequest) -> SeasonResponse:
@@ -47,7 +49,7 @@ class SeasonRepository:
 
     def get_by_id(self, season_id: int) -> Optional[SeasonResponse]:
         query = """
-            SELECT Id, Name, StartDate, EndDate
+            SELECT Id, Name, StartDate, EndDate, Status
             FROM tblSeasons
             WHERE Id = %s AND Void = 0
         """
@@ -60,7 +62,7 @@ class SeasonRepository:
 
     def get_all(self) -> List[SeasonResponse]:
         query = """
-            SELECT Id, Name, StartDate, EndDate
+            SELECT Id, Name, StartDate, EndDate, Status
             FROM tblSeasons
             WHERE Void = 0
             ORDER BY Id DESC

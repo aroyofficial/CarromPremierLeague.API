@@ -24,3 +24,6 @@ class MatchController:
 
     def delete(self, match_id: int):
         return self.service.delete(match_id)
+    
+    def get_next_match_order(self, season_id: int):
+        return self.service.get_next_match_order(season_id)
