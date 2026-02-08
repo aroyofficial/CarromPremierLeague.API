@@ -11,7 +11,8 @@ from schemas.roster_schema import (
     TeamRosterResponse,
     PlayerSeasonHistoryResponse,
     SeasonRosterResponse,
-    RemovePlayerRequest
+    RemovePlayerRequest,
+    SeasonTeamPlayersHistoryResponse
 )
 
 
@@ -112,3 +113,18 @@ def get_season_rosters(
         data=result
     )
 
+@router.get(
+    "/season/{season_id}/teams",
+    response_model=ApiResponse[SeasonTeamPlayersHistoryResponse]
+)
+def get_season_team_players_history(
+    season_id: int,
+    controller=Depends(get_controller)
+):
+    result = controller.get_season_team_players_history(season_id)
+
+    return ApiResponse(
+        success=True,
+        message="Season team players history fetched successfully",
+        data=result
+    )

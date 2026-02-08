@@ -65,3 +65,19 @@ class SeasonRosterItem(BaseModel):
 class SeasonRosterResponse(BaseModel):
     season_id: int
     rosters: List[SeasonRosterItem]
+
+class TeamHistoryPlayer(BaseModel):
+    player_id: int
+    first_name: str
+    last_name: str
+    avatar_url: str | None
+
+
+class TeamPlayersHistory(BaseModel):
+    team_id: int
+    players: List[TeamHistoryPlayer]
+
+
+class SeasonTeamPlayersHistoryResponse(BaseModel):
+    season_id: int
+    teams: List[TeamPlayersHistory]

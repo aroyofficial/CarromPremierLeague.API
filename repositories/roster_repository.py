@@ -7,7 +7,10 @@ from schemas.roster_schema import (
     PlayerSeasonHistoryResponse,
     PlayerSeasonHistoryItem,
     SeasonRosterResponse,
-    SeasonRosterItem
+    SeasonRosterItem,
+    SeasonTeamPlayersHistoryResponse,
+    TeamPlayersHistory,
+    TeamHistoryPlayer
 )
 
 
@@ -65,6 +68,54 @@ class RosterRepository:
         self.db.commit()
 
         return cursor.rowcount > 0
+    
+    def get_season_team_players_history(self, season_id: int) -> SeasonTeamPlayersHistoryResponse:
+        query = """
+            SELECT p.Id AS PlayerId,
+                p.FirstName,
+                p.LastName,
+                p.AvatarUrl,
+                pst.TeamId
+            FROM tblPlayersSeasonsTeams pst
+            JOIN tblPlayers p ON pst.PlayerId = p.Id
+            WHERE pst.SeasonId = %s
+            AND pst.Void = 0
+            AND p.Void = 0
+        """
+
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(query, (season_id,))
+        rows = cursor.fetchall()
+
+        team_map = {}
+
+        for row in rows:
+            team_id = row["TeamId"]
+
+            player = TeamHistoryPlayer(
+                player_id=row["PlayerId"],
+                first_name=row["FirstName"],
+                last_name=row["LastName"],
+                avatar_url=row["AvatarUrl"]
+            )
+
+            if team_id not in team_map:
+                team_map[team_id] = []
+
+            team_map[team_id].append(player)
+
+        teams = [
+            TeamPlayersHistory(
+                team_id=team_id,
+                players=players
+            )
+            for team_id, players in team_map.items()
+        ]
+
+        return SeasonTeamPlayersHistoryResponse(
+            season_id=season_id,
+            teams=teams
+        )
 
     def get_team_roster(self, season_id: int, team_id: int) -> TeamRosterResponse:
         query = """

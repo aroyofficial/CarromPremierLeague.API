@@ -24,3 +24,6 @@ class RosterController:
 
     def get_season_rosters(self, season_id: int):
         return self.service.get_season_rosters(season_id)
+
+    def get_season_team_players_history(self, season_id: int):
+        return self.service.get_season_team_players_history(season_id)
