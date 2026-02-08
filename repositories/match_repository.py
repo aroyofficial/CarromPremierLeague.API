@@ -1,4 +1,5 @@
 from typing import Optional, List
+from enums.match_category import MatchCategory
 from schemas.match_schema import (
     MatchCreateRequest,
     MatchUpdateRequest,
@@ -59,6 +60,22 @@ class MatchRepository:
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
+
+        if request.category == MatchCategory.Final:
+            query1 = """
+                SELECT 1
+                FROM tblMatches
+                WHERE SeasonId = %s
+                AND Void = 0
+                AND Category = %s
+                LIMIT 1
+            """
+
+            cursor = self.db.cursor()
+            cursor.execute(query1, (request.season_id, request.category.value))
+            row = cursor.fetchone()
+            if row is not None:
+                raise ValueError("Final match already exists")
 
         cursor = self.db.cursor()
 
@@ -121,6 +138,8 @@ class MatchRepository:
             return self.get_by_id(match_id)
 
         field_mapping = {
+            "team1": "Team1",
+            "team2": "Team2",
             "scheduled_date": "ScheduledDate",
             "duration": "Duration",
             "extra": "Extra",
@@ -142,6 +161,7 @@ class MatchRepository:
             UPDATE tblMatches
             SET {', '.join(fields)}
             WHERE Id = %s AND Void = 0
+            AND Status <> 3
         """
 
         values.append(match_id)

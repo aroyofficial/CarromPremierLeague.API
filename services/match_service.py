@@ -15,9 +15,6 @@ class MatchService:
         self.repository = repository
 
     def create(self, request: MatchCreateRequest) -> MatchResponse:
-        if request.team1 == request.team2:
-            raise HTTPException(status_code=400, detail="Team1 and Team2 cannot be same")
-
         return self.repository.create(request)
 
     def get_by_id(self, match_id: int) -> MatchResponse:
