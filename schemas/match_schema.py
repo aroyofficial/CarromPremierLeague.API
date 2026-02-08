@@ -50,6 +50,7 @@ class MatchResponse(BaseModel):
     season_id: int
     net_points: Optional[int]
     outcome: Optional[int]
+    order: int
 
 class MatchOrderResponse(BaseModel):
     order: int

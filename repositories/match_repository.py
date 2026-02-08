@@ -37,6 +37,7 @@ class MatchRepository:
             season_id=row["SeasonId"],
             net_points=row["NetPoints"],
             outcome=row["Outcome"],
+            order=row["Order"]
         )
         
     def create(self, request: MatchCreateRequest) -> MatchResponse:
@@ -104,7 +105,7 @@ class MatchRepository:
         if season_id is not None:
             query += f" AND SeasonId = {season_id}"
 
-        query += " ORDER BY ScheduledDate DESC"
+        query += " ORDER BY `Order` ASC"
 
         cursor = self.db.cursor(dictionary=True)
         cursor.execute(query)
