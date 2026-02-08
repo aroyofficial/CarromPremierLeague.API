@@ -51,6 +51,7 @@ class MatchResponse(BaseModel):
     net_points: Optional[int]
     outcome: Optional[int]
     order: int
+    toss_outcome: int
 
 class MatchOrderResponse(BaseModel):
     order: int

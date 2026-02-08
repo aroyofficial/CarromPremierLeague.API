@@ -37,7 +37,8 @@ class MatchRepository:
             season_id=row["SeasonId"],
             net_points=row["NetPoints"],
             outcome=row["Outcome"],
-            order=row["Order"]
+            order=row["Order"],
+            toss_outcome=row["TossOutcome"]
         )
         
     def create(self, request: MatchCreateRequest) -> MatchResponse:
