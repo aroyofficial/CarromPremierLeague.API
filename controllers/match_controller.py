@@ -1,7 +1,8 @@
 from services.match_service import MatchService
 from schemas.match_schema import (
     MatchCreateRequest,
-    MatchUpdateRequest
+    MatchUpdateRequest,
+    MatchStatsUpsertRequest
 )
 
 
@@ -27,3 +28,6 @@ class MatchController:
     
     def get_next_match_order(self, season_id: int):
         return self.service.get_next_match_order(season_id)
+
+    def upsert_stats(self, match_id: int, request: MatchStatsUpsertRequest):
+        return self.service.upsert_stats(match_id, request)

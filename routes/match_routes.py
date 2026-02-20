@@ -9,7 +9,9 @@ from schemas.match_schema import (
     MatchCreateRequest,
     MatchUpdateRequest,
     MatchResponse,
-    MatchOrderResponse
+    MatchOrderResponse,
+    MatchStatsUpsertRequest,
+    MatchStatResponse
 )
 
 
@@ -70,6 +72,15 @@ def update(match_id: int, request: MatchUpdateRequest, controller: MatchControll
         success=True,
         message="Match updated successfully",
         data=controller.update(match_id, request)
+    )
+
+
+@router.put("/{match_id}/stats", response_model=ApiResponse[List[MatchStatResponse]])
+def upsert_stats(match_id: int, request: MatchStatsUpsertRequest, controller: MatchController = Depends(get_controller)):
+    return ApiResponse(
+        success=True,
+        message="Match stats updated successfully",
+        data=controller.upsert_stats(match_id, request)
     )
 
 
