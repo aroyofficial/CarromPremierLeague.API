@@ -1,4 +1,7 @@
-from schemas.stats_schema import HeadToHeadResponse
+from typing import List
+from schemas.stats_schema import HeadToHeadResponse, TopCoinPotterResponse
+from enums.match_category import MatchCategory
+from enums.match_status import MatchStatus
 
 
 class StatsRepository:
@@ -34,3 +37,52 @@ class StatsRepository:
                 team1_net_points=row.get("TeamANetPoints", 0),
                 team2_net_points=row.get("TeamBNetPoints", 0),
             )
+
+    def get_season_top_coin_potters(
+        self,
+        season_id: int,
+        limit: int = 3
+    ) -> List[TopCoinPotterResponse]:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.callproc("usp_GetSeasonTopCoinPotters", [season_id, limit])
+
+        top_coin_potters = []
+        for result in cursor.stored_results():
+            rows = result.fetchall()
+            for row in rows:
+                top_coin_potters.append(
+                    TopCoinPotterResponse(
+                        player_id=row["PlayerId"],
+                        first_name=row["FirstName"],
+                        last_name=row["LastName"],
+                        avatar_url=row.get("AvatarUrl"),
+                        team_id=row.get("TeamId"),
+                        team_name=row.get("TeamName"),
+                        coins_pocketed=row.get("CoinsPocketed", 0),
+                    )
+                )
+            break
+
+        return top_coin_potters
+
+    def has_completed_league_matches(self, season_id: int) -> bool:
+        query = """
+            SELECT 1
+            FROM tblMatches
+            WHERE SeasonId = %s
+              AND Category = %s
+              AND Status = %s
+              AND Void = 0
+            LIMIT 1
+        """
+
+        cursor = self.db.cursor()
+        cursor.execute(
+            query,
+            (
+                season_id,
+                MatchCategory.League.value,
+                MatchStatus.Played.value
+            )
+        )
+        return cursor.fetchone() is not None
