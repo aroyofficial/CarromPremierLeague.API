@@ -14,3 +14,6 @@ class StatsController:
 
     def has_completed_league_matches(self, season_id: int):
         return self.service.has_completed_league_matches(season_id)
+
+    def is_league_stage_completed(self, season_id: int):
+        return self.service.is_league_stage_completed(season_id)

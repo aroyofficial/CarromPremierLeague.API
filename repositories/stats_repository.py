@@ -59,6 +59,8 @@ class StatsRepository:
                         team_id=row.get("TeamId"),
                         team_name=row.get("TeamName"),
                         coins_pocketed=row.get("CoinsPocketed", 0),
+                        coins_fined=row.get("CoinsFined", 0),
+                        strikers_pocketed=row.get("StrikersPocketed", 0),
                     )
                 )
             break
@@ -86,3 +88,31 @@ class StatsRepository:
             )
         )
         return cursor.fetchone() is not None
+
+    def is_league_stage_completed(self, season_id: int) -> bool:
+        query = """
+            SELECT
+                COUNT(*) AS TotalLeagueMatches,
+                SUM(CASE WHEN Status <> %s THEN 1 ELSE 0 END) AS PendingLeagueMatches
+            FROM tblMatches
+            WHERE SeasonId = %s
+              AND Category = %s
+              AND Void = 0
+        """
+
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            query,
+            (
+                MatchStatus.Played.value,
+                season_id,
+                MatchCategory.League.value,
+            ),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False
+
+        total = int(row.get("TotalLeagueMatches", 0) or 0)
+        pending = int(row.get("PendingLeagueMatches", 0) or 0)
+        return total > 0 and pending == 0

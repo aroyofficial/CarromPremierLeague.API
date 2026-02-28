@@ -38,3 +38,11 @@ class StatsService:
                 detail="Invalid season id"
             )
         return self.repository.has_completed_league_matches(season_id)
+
+    def is_league_stage_completed(self, season_id: int):
+        if season_id <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid season id"
+            )
+        return self.repository.is_league_stage_completed(season_id)

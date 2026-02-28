@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 
 class HeadToHeadResponse(BaseModel):
@@ -20,3 +20,10 @@ class TopCoinPotterResponse(BaseModel):
     team_id: Optional[int] = None
     team_name: Optional[str] = None
     coins_pocketed: int
+    coins_fined: int
+    strikers_pocketed: int
+
+
+class SeasonTopCoinPottersResponse(BaseModel):
+    is_league_stage_completed: bool
+    players: List[TopCoinPotterResponse]
