@@ -2,7 +2,8 @@ from typing import Optional, List
 from schemas.player_schema import (
     PlayerCreateRequest,
     PlayerUpdateRequest,
-    PlayerResponse
+    PlayerResponse,
+    PlayerProfileResponse
 )
 
 
@@ -29,6 +30,81 @@ class PlayerRepository:
                 date_of_birth=row["DateOfBirth"],
                 avatar_url=row["AvatarUrl"],
                 nationality_id=row["NationalityId"]
+            )
+            for row in rows
+        ]
+
+    def get_profiles(self) -> List[PlayerProfileResponse]:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                p.Id,
+                p.FirstName,
+                p.LastName,
+                p.DateOfBirth,
+                p.AvatarUrl,
+                p.NationalityId,
+                debut.DebutSeasonId,
+                debut.DebutSeasonName,
+                IFNULL(stats.TotalCoinsPocketed, 0) AS TotalCoinsPocketed,
+                IFNULL(stats.TotalCoinsFined, 0) AS TotalCoinsFined,
+                IFNULL(stats.TotalStrikersPocketed, 0) AS TotalStrikersPocketed
+            FROM tblPlayers p
+            LEFT JOIN (
+                SELECT
+                    pst.PlayerId,
+                    s.Id AS DebutSeasonId,
+                    s.Name AS DebutSeasonName
+                FROM tblPlayersSeasonsTeams pst
+                INNER JOIN (
+                    SELECT PlayerId, MIN(SeasonId) AS DebutSeasonId
+                    FROM tblPlayersSeasonsTeams
+                    WHERE Void = 0
+                    GROUP BY PlayerId
+                ) d
+                    ON d.PlayerId = pst.PlayerId
+                   AND d.DebutSeasonId = pst.SeasonId
+                INNER JOIN tblSeasons s
+                    ON s.Id = pst.SeasonId
+                   AND s.Void = 0
+                WHERE pst.Void = 0
+            ) debut
+                ON debut.PlayerId = p.Id
+            LEFT JOIN (
+                SELECT
+                    ms.PlayerId,
+                    SUM(IFNULL(ms.CoinsPocketed, 0)) AS TotalCoinsPocketed,
+                    SUM(IFNULL(ms.CoinsFined, 0)) AS TotalCoinsFined,
+                    SUM(IFNULL(ms.StrikersPocketed, 0)) AS TotalStrikersPocketed
+                FROM tblMatchStats ms
+                INNER JOIN tblMatches m
+                    ON m.Id = ms.MatchId
+                WHERE ms.Void = 0
+                  AND m.Void = 0
+                  AND m.Status = 3
+                GROUP BY ms.PlayerId
+            ) stats
+                ON stats.PlayerId = p.Id
+            WHERE p.Void = 0
+            ORDER BY p.FirstName ASC, p.LastName ASC
+            """
+        )
+        rows = cursor.fetchall()
+
+        return [
+            PlayerProfileResponse(
+                id=row["Id"],
+                first_name=row["FirstName"],
+                last_name=row["LastName"],
+                date_of_birth=row["DateOfBirth"],
+                avatar_url=row["AvatarUrl"],
+                nationality_id=row["NationalityId"],
+                debut_season_id=row.get("DebutSeasonId"),
+                debut_season_name=row.get("DebutSeasonName"),
+                total_coins_pocketed=row.get("TotalCoinsPocketed", 0),
+                total_coins_fined=row.get("TotalCoinsFined", 0),
+                total_strikers_pocketed=row.get("TotalStrikersPocketed", 0),
             )
             for row in rows
         ]

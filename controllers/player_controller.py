@@ -3,7 +3,8 @@ from services.player_service import PlayerService
 from schemas.player_schema import (
     PlayerCreateRequest,
     PlayerUpdateRequest,
-    PlayerResponse
+    PlayerResponse,
+    PlayerProfileResponse
 )
 
 
@@ -14,6 +15,9 @@ class PlayerController:
 
     def get_all(self) -> List[PlayerResponse]:
         return self.service.get_all()
+
+    def get_profiles(self) -> List[PlayerProfileResponse]:
+        return self.service.get_profiles()
 
     def get_by_id(self, player_id: int) -> PlayerResponse:
         return self.service.get_by_id(player_id)
