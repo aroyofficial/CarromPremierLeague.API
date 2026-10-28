@@ -1,8 +1,6 @@
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import date
-
-from enums.season_status import SeasonStatus
 
 
 class SeasonCreateRequest(BaseModel):
@@ -22,7 +20,6 @@ class SeasonResponse(BaseModel):
     name: str
     start_date: Optional[date]
     end_date: Optional[date]
-    status: SeasonStatus
 
     class Config:
         from_attributes = True
@@ -43,4 +40,5 @@ class LeagueTableStanding(BaseModel):
 class LeagueTableResponse(BaseModel):
     winner_id: Optional[int] = None
     season_status: int
+    data_available: bool = True
     standings: List[LeagueTableStanding]

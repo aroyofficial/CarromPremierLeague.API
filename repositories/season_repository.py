@@ -7,9 +7,6 @@ from schemas.season_schema import (
     LeagueTableResponse,
     LeagueTableStanding
 )
-from enums.season_status import SeasonStatus
-
-
 class SeasonRepository:
 
     def __init__(self, db):
@@ -25,7 +22,6 @@ class SeasonRepository:
             name=row["Name"],
             start_date=row["StartDate"],
             end_date=row["EndDate"],
-            status=SeasonStatus(int(row["Status"]))
         )
 
     def create(self, request: SeasonCreateRequest) -> SeasonResponse:
@@ -49,7 +45,7 @@ class SeasonRepository:
 
     def get_by_id(self, season_id: int) -> Optional[SeasonResponse]:
         query = """
-            SELECT Id, Name, StartDate, EndDate, Status
+            SELECT Id, Name, StartDate, EndDate
             FROM tblSeasons
             WHERE Id = %s AND Void = 0
         """
@@ -62,7 +58,7 @@ class SeasonRepository:
 
     def get_all(self) -> List[SeasonResponse]:
         query = """
-            SELECT Id, Name, StartDate, EndDate, Status
+            SELECT Id, Name, StartDate, EndDate
             FROM tblSeasons
             WHERE Void = 0
             ORDER BY Id DESC
@@ -137,44 +133,51 @@ class SeasonRepository:
     
     def get_league_table(self, season_id: int) -> LeagueTableResponse:
         cursor = self.db.cursor(dictionary=True)
-        cursor.callproc("usp_GetLeagueTable", [season_id])
+        cursor.execute("EXEC dbo.usp_GetLeagueTable ?", (season_id,))
 
         result = LeagueTableResponse(
             standings=[],
             season_status=1
         )
 
-        result_sets = cursor.stored_results()
-
-        try:
-            league_result = next(result_sets)
-            league_rows = league_result.fetchall()
-
-            for row in league_rows:
-                is_winner = bool(row.get("IsWinner", 0))
-                result.standings.append(
-                    LeagueTableStanding(
-                        team_id=row["TeamId"],
-                        team_name=row["TeamName"],
-                        matches_played=row.get("MatchesPlayed", 0),
-                        wins=row.get("Wins", 0),
-                        points=row.get("Points", 0),
-                        net_points=row.get("TotalNetPoints", 0),
-                        head_to_head_wins=row.get("HeadToHeadWins", 0)
-                    )
+        for row in cursor.fetchall():
+            if int(row.get("MatchesPlayed") or 0) == 0:
+                continue
+            is_winner = bool(row.get("IsWinner", 0))
+            result.standings.append(
+                LeagueTableStanding(
+                    team_id=row["TeamId"],
+                    team_name=row["TeamName"],
+                    matches_played=row.get("MatchesPlayed", 0),
+                    wins=row.get("Wins", 0),
+                    points=row.get("Points", 0),
+                    net_points=row.get("TotalNetPoints", 0),
+                    head_to_head_wins=row.get("HeadToHeadWins", 0)
                 )
-                if is_winner:
-                    result.winner_id = int(row["TeamId"])
-        except StopIteration:
-            pass
+            )
+            if is_winner:
+                result.winner_id = int(row["TeamId"])
 
-        try:
-            status_result = next(result_sets)
-            status_row = status_result.fetchone()
+        while cursor.nextset():
+            status_row = cursor.fetchone()
+            if status_row and "SeasonStatus" in status_row:
+                result.season_status = int(status_row["SeasonStatus"])
+                break
+        cursor.close()
 
-            if status_row:
-                result.season_status = int(status_row.get("SeasonStatus"))
-        except StopIteration:
-            pass
+        count_cursor = self.db.cursor(dictionary=True)
+        count_cursor.execute(
+            """
+            SELECT COUNT(*) AS MatchCount
+            FROM tblMatches
+            WHERE SeasonId = %s AND Void = 0
+            """,
+            (season_id,),
+        )
+        count_row = count_cursor.fetchone()
+        result.data_available = int((count_row or {}).get("MatchCount") or 0) > 0
+        if not result.data_available:
+            result.standings = []
+            result.winner_id = None
 
         return result

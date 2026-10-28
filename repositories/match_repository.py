@@ -81,15 +81,8 @@ class MatchRepository:
 
     def _get_top_two_teams_from_league_table(self, season_id: int) -> List[int]:
         cursor = self.db.cursor(dictionary=True)
-        cursor.callproc("usp_GetLeagueTable", [season_id])
-
-        league_rows = []
-        result_sets = cursor.stored_results()
-        try:
-            league_result = next(result_sets)
-            league_rows = league_result.fetchall()
-        except StopIteration:
-            return []
+        cursor.execute("EXEC dbo.usp_GetLeagueTable ?", (season_id,))
+        league_rows = cursor.fetchall()
 
         ranked_team_ids = [
             int(row["TeamId"])
@@ -299,7 +292,8 @@ class MatchRepository:
                 SELECT 1
                 FROM tblSeasons ts
                 WHERE ts.Id = %s
-                AND ts.Status <> 3
+                AND ts.Void = 0
+                AND (ts.EndDate IS NULL OR ts.EndDate >= CURDATE())
             );
         """
 
@@ -312,39 +306,36 @@ class MatchRepository:
         return MatchOrderResponse(order=row["DesiredOrder"])
 
     def upsert_stats(self, match_id: int, stats: List[MatchStatUpsertItem]) -> List[MatchStatResponse]:
-        query = """
-            INSERT INTO tblMatchStats (
-                MatchId,
-                PlayerId,
-                CoinsPocketed,
-                StrikersPocketed,
-                CoinsFined,
-                ShotsTaken
-            )
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                CoinsPocketed = VALUES(CoinsPocketed),
-                StrikersPocketed = VALUES(StrikersPocketed),
-                CoinsFined = VALUES(CoinsFined),
-                ShotsTaken = VALUES(ShotsTaken),
-                Void = 0,
-                UpdatedAt = CURRENT_TIMESTAMP(6)
-        """
-
-        values = [
-            (
-                match_id,
-                item.player_id,
-                item.coins_pocketed,
-                item.strikers_pocketed,
-                item.coins_fined,
-                item.shots_taken
-            )
-            for item in stats
-        ]
-
         cursor = self.db.cursor()
-        cursor.executemany(query, values)
+        query = """
+            MERGE dbo.tblMatchStats AS target
+            USING (SELECT ? AS MatchId, ? AS PlayerId, ? AS CoinsPocketed,
+                          ? AS StrikersPocketed, ? AS CoinsFined, ? AS ShotsTaken) AS source
+            ON target.MatchId = source.MatchId AND target.PlayerId = source.PlayerId
+            WHEN MATCHED THEN UPDATE SET
+                CoinsPocketed = source.CoinsPocketed,
+                StrikersPocketed = source.StrikersPocketed,
+                CoinsFined = source.CoinsFined,
+                ShotsTaken = source.ShotsTaken,
+                Void = 0,
+                UpdatedAt = SYSUTCDATETIME()
+            WHEN NOT MATCHED THEN INSERT
+                (MatchId, PlayerId, CoinsPocketed, StrikersPocketed, CoinsFined, ShotsTaken)
+                VALUES
+                (source.MatchId, source.PlayerId, source.CoinsPocketed, source.StrikersPocketed, source.CoinsFined, source.ShotsTaken);
+        """
+        for item in stats:
+            cursor.execute(
+                query,
+                (
+                    match_id,
+                    item.player_id,
+                    item.coins_pocketed,
+                    item.strikers_pocketed,
+                    item.coins_fined,
+                    item.shots_taken,
+                ),
+            )
         self.db.commit()
 
         return self.get_stats(match_id)
