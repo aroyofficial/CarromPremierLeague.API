@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, model_validator
-from typing import Optional
+from typing import Optional, List
 from datetime import date
 
 from enums.match_category import MatchCategory
@@ -36,9 +36,10 @@ class MatchUpdateRequest(BaseModel):
     duration: Optional[int] = Field(default=None, ge=0)
     extra: Optional[int] = Field(default=None, ge=0)
     golden_strike: Optional[bool] = None
-    status: Optional[int] = Field(default=None, ge=1)
-    net_points: Optional[int] = None
-    outcome: Optional[int] = Field(default=None, ge=1, le=2)
+    status: Optional[int] = Field(default=None, ge=1, le=3)
+    net_points: Optional[int] = Field(default=None, ge=0, le=255)
+    outcome: Optional[int] = Field(default=None, ge=1, le=3)
+    toss_outcome: Optional[int] = Field(default=None, ge=1, le=3)
 
 
 class MatchResponse(BaseModel):
@@ -59,3 +60,24 @@ class MatchResponse(BaseModel):
 
 class MatchOrderResponse(BaseModel):
     order: int
+
+
+class MatchStatUpsertItem(BaseModel):
+    player_id: int = Field(gt=0)
+    coins_pocketed: int = Field(default=0, ge=0, le=255)
+    strikers_pocketed: int = Field(default=0, ge=0, le=255)
+    coins_fined: int = Field(default=0, ge=0, le=255)
+    shots_taken: int = Field(default=0, ge=0, le=255)
+
+
+class MatchStatsUpsertRequest(BaseModel):
+    stats: List[MatchStatUpsertItem] = Field(min_length=1)
+
+
+class MatchStatResponse(BaseModel):
+    match_id: int
+    player_id: int
+    coins_pocketed: Optional[int]
+    strikers_pocketed: Optional[int]
+    coins_fined: Optional[int]
+    shots_taken: Optional[int]

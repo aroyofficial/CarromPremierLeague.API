@@ -7,3 +7,4 @@ class MatchCategory(Enum):
     Qualifier1 = 4
     Qualifier2 = 5
     Friendly = 6
+    GoldenStrike = 7

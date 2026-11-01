@@ -1,5 +1,5 @@
 from fastapi import HTTPException
-import mysql.connector
+import pyodbc
 
 from repositories.roster_repository import RosterRepository
 
@@ -26,10 +26,10 @@ class RosterService:
 
             return result
 
-        except mysql.connector.Error as e:
+        except pyodbc.Error as e:
             raise HTTPException(
                 status_code=400,
-                detail=str(e.msg)
+                detail=str(e)
             )
         
     def remove_player(self, season_id: int, player_id: int):

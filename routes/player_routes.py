@@ -9,7 +9,8 @@ from services.country_service import CountryService
 from schemas.player_schema import (
     PlayerCreateRequest,
     PlayerUpdateRequest,
-    PlayerResponse
+    PlayerResponse,
+    PlayerProfileResponse
 )
 from core.database import get_db
 from core.response import ApiResponse
@@ -36,6 +37,17 @@ def get_all(controller: PlayerController = Depends(get_controller)):
     return ApiResponse(
         success=True,
         message="Players fetched successfully",
+        data=result
+    )
+
+
+@router.get("/profiles", response_model=ApiResponse[List[PlayerProfileResponse]])
+def get_profiles(controller: PlayerController = Depends(get_controller)):
+    result = controller.get_profiles()
+
+    return ApiResponse(
+        success=True,
+        message="Player profiles fetched successfully",
         data=result
     )
 

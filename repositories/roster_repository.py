@@ -22,9 +22,9 @@ class RosterRepository:
     def assign_player(self, season_id: int, team_id: int, player_id: int) -> RosterResponse:
         cursor = self.db.cursor()
 
-        cursor.callproc(
-            "usp_AssignPlayerToTeam",
-            [season_id, team_id, player_id]
+        cursor.execute(
+            "EXEC dbo.usp_AssignPlayerToTeam ?, ?, ?",
+            (season_id, team_id, player_id)
         )
 
         self.db.commit()

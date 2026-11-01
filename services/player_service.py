@@ -6,7 +6,8 @@ from services.country_service import CountryService
 from schemas.player_schema import (
     PlayerCreateRequest,
     PlayerUpdateRequest,
-    PlayerResponse
+    PlayerResponse,
+    PlayerProfileResponse
 )
 
 
@@ -22,6 +23,9 @@ class PlayerService:
 
     def get_all(self) -> List[PlayerResponse]:
         return self.repository.get_all()
+
+    def get_profiles(self) -> List[PlayerProfileResponse]:
+        return self.repository.get_profiles()
 
     def get_by_id(self, player_id: int) -> PlayerResponse:
         player = self.repository.get_by_id(player_id)

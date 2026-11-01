@@ -3,6 +3,22 @@ from functools import lru_cache
 from typing import Literal
 
 
+def _load_local_env() -> None:
+    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    if not os.path.isfile(env_path):
+        return
+    with open(env_path, encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_local_env()
+
+
 class Settings:
 
     def __init__(self):

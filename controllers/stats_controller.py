@@ -8,3 +8,15 @@ class StatsController:
 
     def get_head_to_head(self, team1_id: int, team2_id: int):
         return self.service.get_head_to_head(team1_id, team2_id)
+
+    def get_season_top_coin_potters(self, season_id: int, limit: int = 3):
+        return self.service.get_season_top_coin_potters(season_id, limit)
+
+    def get_season_player_stats(self, season_id: int):
+        return self.service.get_season_player_stats(season_id)
+
+    def has_completed_league_matches(self, season_id: int):
+        return self.service.has_completed_league_matches(season_id)
+
+    def is_league_stage_completed(self, season_id: int):
+        return self.service.is_league_stage_completed(season_id)
