@@ -84,6 +84,21 @@ class SqlServerConnection:
         self._connection.close()
 
 
+_SQL_SERVER_DRIVERS = (
+    "ODBC Driver 18 for SQL Server",
+    "ODBC Driver 17 for SQL Server",
+)
+
+
+def _sql_server_driver() -> str:
+    installed = list(pyodbc.drivers())
+    for name in _SQL_SERVER_DRIVERS:
+        if name in installed:
+            return name
+    available = ", ".join(installed) or "none"
+    raise RuntimeError(f"SQL Server ODBC driver is not installed. Installed ODBC drivers: {available}.")
+
+
 class Database:
 
     @classmethod
@@ -95,7 +110,7 @@ class Database:
     @classmethod
     def get_connection(cls) -> SqlServerConnection:
         connection_string = (
-            "DRIVER={ODBC Driver 17 for SQL Server};"
+            f"DRIVER={{{_sql_server_driver()}}};"
             f"SERVER={settings.DB_HOST},{settings.DB_PORT};"
             f"DATABASE={settings.DB_NAME};"
             f"UID={settings.DB_USER};PWD={settings.DB_PASSWORD};"
