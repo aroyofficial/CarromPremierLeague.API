@@ -4,6 +4,7 @@ from typing import List
 from core.database import get_db
 from core.response import ApiResponse
 from controllers.season_controller import SeasonController
+from schemas.schedule_schema import SeasonScheduleResponse
 from schemas.season_schema import (
     SeasonCreateRequest,
     SeasonUpdateRequest,
@@ -85,6 +86,24 @@ def delete_season(
     return ApiResponse(
         success=True,
         message="Season deleted successfully",
+        data=result
+    )
+
+
+@router.get(
+    "/{season_id}/schedule",
+    response_model=ApiResponse[SeasonScheduleResponse]
+)
+def get_schedule(
+    season_id: int,
+    db=Depends(get_db)
+):
+    controller = SeasonController(db)
+    result = controller.get_schedule(season_id)
+
+    return ApiResponse(
+        success=True,
+        message="Season schedule fetched successfully",
         data=result
     )
 

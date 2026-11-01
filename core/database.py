@@ -99,7 +99,7 @@ class Database:
             f"SERVER={settings.DB_HOST},{settings.DB_PORT};"
             f"DATABASE={settings.DB_NAME};"
             f"UID={settings.DB_USER};PWD={settings.DB_PASSWORD};"
-            "TrustServerCertificate=yes;"
+            "Encrypt=yes;TrustServerCertificate=yes;"
         )
         return SqlServerConnection(pyodbc.connect(connection_string, autocommit=False))
 

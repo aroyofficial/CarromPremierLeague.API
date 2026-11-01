@@ -27,3 +27,21 @@ class TopCoinPotterResponse(BaseModel):
 class SeasonTopCoinPottersResponse(BaseModel):
     is_league_stage_completed: bool
     players: List[TopCoinPotterResponse]
+
+
+class PlayerSeasonStatResponse(BaseModel):
+    player_id: int
+    first_name: str
+    last_name: str
+    avatar_url: Optional[str] = None
+    team_id: Optional[int] = None
+    team_name: Optional[str] = None
+    matches_played: int
+    coins_pocketed: int
+    coins_fined: int
+    strikers_pocketed: int
+
+
+class SeasonPlayerStatsResponse(BaseModel):
+    data_available: bool
+    players: List[PlayerSeasonStatResponse]

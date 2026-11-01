@@ -31,6 +31,14 @@ class StatsService:
 
         return self.repository.get_season_top_coin_potters(season_id, limit)
 
+    def get_season_player_stats(self, season_id: int):
+        if season_id <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid season id"
+            )
+        return self.repository.get_season_player_stats(season_id)
+
     def has_completed_league_matches(self, season_id: int):
         if season_id <= 0:
             raise HTTPException(

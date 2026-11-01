@@ -12,6 +12,9 @@ class StatsController:
     def get_season_top_coin_potters(self, season_id: int, limit: int = 3):
         return self.service.get_season_top_coin_potters(season_id, limit)
 
+    def get_season_player_stats(self, season_id: int):
+        return self.service.get_season_player_stats(season_id)
+
     def has_completed_league_matches(self, season_id: int):
         return self.service.has_completed_league_matches(season_id)
 

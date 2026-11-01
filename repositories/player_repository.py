@@ -45,32 +45,15 @@ class PlayerRepository:
                 p.DateOfBirth,
                 p.AvatarUrl,
                 p.NationalityId,
-                debut.DebutSeasonId,
-                debut.DebutSeasonName,
+                p.DebutSeasonId,
+                debutSeason.Name AS DebutSeasonName,
                 IFNULL(stats.TotalCoinsPocketed, 0) AS TotalCoinsPocketed,
                 IFNULL(stats.TotalCoinsFined, 0) AS TotalCoinsFined,
                 IFNULL(stats.TotalStrikersPocketed, 0) AS TotalStrikersPocketed
             FROM tblPlayers p
-            LEFT JOIN (
-                SELECT
-                    pst.PlayerId,
-                    s.Id AS DebutSeasonId,
-                    s.Name AS DebutSeasonName
-                FROM tblPlayersSeasonsTeams pst
-                INNER JOIN (
-                    SELECT PlayerId, MIN(SeasonId) AS DebutSeasonId
-                    FROM tblPlayersSeasonsTeams
-                    WHERE Void = 0
-                    GROUP BY PlayerId
-                ) d
-                    ON d.PlayerId = pst.PlayerId
-                   AND d.DebutSeasonId = pst.SeasonId
-                INNER JOIN tblSeasons s
-                    ON s.Id = pst.SeasonId
-                   AND s.Void = 0
-                WHERE pst.Void = 0
-            ) debut
-                ON debut.PlayerId = p.Id
+            LEFT JOIN tblSeasons debutSeason
+                ON debutSeason.Id = p.DebutSeasonId
+               AND debutSeason.Void = 0
             LEFT JOIN (
                 SELECT
                     ms.PlayerId,

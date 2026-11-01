@@ -1,5 +1,10 @@
 from typing import List
-from schemas.stats_schema import HeadToHeadResponse, TopCoinPotterResponse
+from schemas.stats_schema import (
+    HeadToHeadResponse,
+    PlayerSeasonStatResponse,
+    SeasonPlayerStatsResponse,
+    TopCoinPotterResponse,
+)
 from enums.match_category import MatchCategory
 from enums.match_status import MatchStatus
 
@@ -52,6 +57,84 @@ class StatsRepository:
             )
 
         return top_coin_potters
+
+    def get_season_player_stats(self, season_id: int) -> SeasonPlayerStatsResponse:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS MatchCount
+            FROM tblMatches
+            WHERE SeasonId = %s AND Void = 0
+            """,
+            (season_id,),
+        )
+        count_row = cursor.fetchone()
+        if int((count_row or {}).get("MatchCount") or 0) == 0:
+            return SeasonPlayerStatsResponse(data_available=False, players=[])
+
+        cursor.execute(
+            """
+            SELECT
+                p.Id AS PlayerId,
+                p.FirstName,
+                p.LastName,
+                p.AvatarUrl,
+                roster.TeamId,
+                roster.TeamName,
+                ISNULL(stats.MatchesPlayed, 0) AS MatchesPlayed,
+                ISNULL(stats.CoinsPocketed, 0) AS CoinsPocketed,
+                ISNULL(stats.CoinsFined, 0) AS CoinsFined,
+                ISNULL(stats.StrikersPocketed, 0) AS StrikersPocketed
+            FROM tblPlayers p
+            INNER JOIN (
+                SELECT pst.PlayerId, pst.TeamId, t.Name AS TeamName
+                FROM tblPlayersSeasonsTeams pst
+                LEFT JOIN tblTeams t
+                    ON t.Id = pst.TeamId
+                   AND t.Void = 0
+                WHERE pst.SeasonId = %s
+                  AND pst.Void = 0
+            ) roster
+                ON roster.PlayerId = p.Id
+            LEFT JOIN (
+                SELECT
+                    ms.PlayerId,
+                    COUNT(DISTINCT m.Id) AS MatchesPlayed,
+                    SUM(ISNULL(ms.CoinsPocketed, 0)) AS CoinsPocketed,
+                    SUM(ISNULL(ms.CoinsFined, 0)) AS CoinsFined,
+                    SUM(ISNULL(ms.StrikersPocketed, 0)) AS StrikersPocketed
+                FROM tblMatchStats ms
+                INNER JOIN tblMatches m
+                    ON m.Id = ms.MatchId
+                   AND m.Void = 0
+                   AND m.Status = %s
+                   AND m.SeasonId = %s
+                WHERE ms.Void = 0
+                GROUP BY ms.PlayerId
+            ) stats
+                ON stats.PlayerId = p.Id
+            WHERE p.Void = 0
+            ORDER BY p.FirstName ASC, p.LastName ASC
+            """,
+            (season_id, MatchStatus.Played.value, season_id),
+        )
+
+        players = [
+            PlayerSeasonStatResponse(
+                player_id=row["PlayerId"],
+                first_name=row["FirstName"],
+                last_name=row["LastName"],
+                avatar_url=row.get("AvatarUrl"),
+                team_id=row.get("TeamId"),
+                team_name=row.get("TeamName"),
+                matches_played=int(row.get("MatchesPlayed") or 0),
+                coins_pocketed=int(row.get("CoinsPocketed") or 0),
+                coins_fined=int(row.get("CoinsFined") or 0),
+                strikers_pocketed=int(row.get("StrikersPocketed") or 0),
+            )
+            for row in cursor.fetchall()
+        ]
+        return SeasonPlayerStatsResponse(data_available=True, players=players)
 
     def has_completed_league_matches(self, season_id: int) -> bool:
         query = """

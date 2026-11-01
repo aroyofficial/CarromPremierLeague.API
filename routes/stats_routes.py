@@ -7,6 +7,7 @@ from services.stats_service import StatsService
 from controllers.stats_controller import StatsController
 from schemas.stats_schema import (
     HeadToHeadResponse,
+    SeasonPlayerStatsResponse,
     SeasonTopCoinPottersResponse,
 )
 
@@ -69,4 +70,27 @@ def get_season_top_coin_potters(
             is_league_stage_completed=is_league_stage_completed,
             players=players
         )
+    )
+
+
+@router.get(
+    "/season/{season_id}/players",
+    response_model=ApiResponse[SeasonPlayerStatsResponse]
+)
+def get_season_player_stats(
+    season_id: int,
+    controller: StatsController = Depends(get_controller)
+):
+    result = controller.get_season_player_stats(season_id)
+    if not result.data_available:
+        message = "Data is not available for this season"
+    elif not result.players:
+        message = "No players are listed for this season"
+    else:
+        message = "Player stats fetched successfully"
+
+    return ApiResponse(
+        success=True,
+        message=message,
+        data=result
     )
