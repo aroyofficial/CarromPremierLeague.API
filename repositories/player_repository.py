@@ -48,8 +48,11 @@ class PlayerRepository:
                 p.DebutSeasonId,
                 debutSeason.Name AS DebutSeasonName,
                 IFNULL(stats.TotalCoinsPocketed, 0) AS TotalCoinsPocketed,
-                IFNULL(stats.TotalCoinsFined, 0) AS TotalCoinsFined,
-                IFNULL(stats.TotalStrikersPocketed, 0) AS TotalStrikersPocketed
+                IFNULL(stats.TotalOpponentCoinsPocketed, 0) AS TotalOpponentCoinsPocketed,
+                IFNULL(stats.TotalStrikersPocketed, 0) AS TotalStrikersPocketed,
+                IFNULL(stats.TotalSingleFines, 0) AS TotalSingleFines,
+                IFNULL(stats.TotalDoubleFines, 0) AS TotalDoubleFines,
+                IFNULL(stats.TotalCoinsFined, 0) AS TotalCoinsFined
             FROM tblPlayers p
             LEFT JOIN tblSeasons debutSeason
                 ON debutSeason.Id = p.DebutSeasonId
@@ -58,8 +61,11 @@ class PlayerRepository:
                 SELECT
                     ms.PlayerId,
                     SUM(IFNULL(ms.CoinsPocketed, 0)) AS TotalCoinsPocketed,
-                    SUM(IFNULL(ms.CoinsFined, 0)) AS TotalCoinsFined,
-                    SUM(IFNULL(ms.StrikersPocketed, 0)) AS TotalStrikersPocketed
+                    SUM(IFNULL(ms.OpponentCoinsPocketed, 0)) AS TotalOpponentCoinsPocketed,
+                    SUM(IFNULL(ms.StrikersPocketed, 0)) AS TotalStrikersPocketed,
+                    SUM(IFNULL(ms.SingleFines, 0)) AS TotalSingleFines,
+                    SUM(IFNULL(ms.DoubleFines, 0)) AS TotalDoubleFines,
+                    SUM(IFNULL(ms.CoinsFined, 0)) AS TotalCoinsFined
                 FROM tblMatchStats ms
                 INNER JOIN tblMatches m
                     ON m.Id = ms.MatchId
@@ -86,8 +92,11 @@ class PlayerRepository:
                 debut_season_id=row.get("DebutSeasonId"),
                 debut_season_name=row.get("DebutSeasonName"),
                 total_coins_pocketed=row.get("TotalCoinsPocketed", 0),
-                total_coins_fined=row.get("TotalCoinsFined", 0),
+                total_opponent_coins_pocketed=row.get("TotalOpponentCoinsPocketed", 0),
                 total_strikers_pocketed=row.get("TotalStrikersPocketed", 0),
+                total_single_fines=row.get("TotalSingleFines", 0),
+                total_double_fines=row.get("TotalDoubleFines", 0),
+                total_coins_fined=row.get("TotalCoinsFined", 0),
             )
             for row in rows
         ]

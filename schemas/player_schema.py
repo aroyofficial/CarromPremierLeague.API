@@ -32,5 +32,8 @@ class PlayerProfileResponse(PlayerResponse):
     debut_season_id: Optional[int] = None
     debut_season_name: Optional[str] = None
     total_coins_pocketed: int = 0
-    total_coins_fined: int = 0
+    total_opponent_coins_pocketed: int = 0
     total_strikers_pocketed: int = 0
+    total_single_fines: int = 0
+    total_double_fines: int = 0
+    total_coins_fined: int = 0

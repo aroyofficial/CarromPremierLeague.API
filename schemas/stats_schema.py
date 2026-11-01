@@ -38,8 +38,11 @@ class PlayerSeasonStatResponse(BaseModel):
     team_name: Optional[str] = None
     matches_played: int
     coins_pocketed: int
-    coins_fined: int
+    opponent_coins_pocketed: int = 0
     strikers_pocketed: int
+    single_fines: int = 0
+    double_fines: int = 0
+    coins_fined: int = 0
 
 
 class SeasonPlayerStatsResponse(BaseModel):

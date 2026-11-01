@@ -686,6 +686,41 @@ class MatchRepository:
 
         return self.get_stats(match_id)
 
+    def players_on_match_teams(self, match_id: int) -> list[dict]:
+        query = """
+            SELECT pst.PlayerId, pst.TeamId
+            FROM tblMatches m
+            JOIN tblPlayersSeasonsTeams pst
+              ON pst.SeasonId = m.SeasonId
+             AND pst.Void = 0
+             AND pst.TeamId IN (m.Team1, m.Team2)
+            WHERE m.Id = %s
+              AND m.Void = 0
+        """
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(query, (match_id,))
+        return cursor.fetchall()
+
+    def player_coin_lines(self, match_id: int) -> list[dict]:
+        query = """
+            SELECT ms.PlayerId,
+                   pst.TeamId,
+                   ISNULL(ms.CoinsPocketed, 0) AS CoinsPocketed,
+                   ISNULL(ms.OpponentCoinsPocketed, 0) AS OpponentCoinsPocketed
+            FROM tblMatchStats ms
+            JOIN tblMatches m ON m.Id = ms.MatchId
+            JOIN tblPlayersSeasonsTeams pst
+              ON pst.PlayerId = ms.PlayerId
+             AND pst.SeasonId = m.SeasonId
+             AND pst.Void = 0
+             AND pst.TeamId IN (m.Team1, m.Team2)
+            WHERE ms.MatchId = %s
+              AND ms.Void = 0
+        """
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(query, (match_id,))
+        return cursor.fetchall()
+
     def get_stats(self, match_id: int) -> List[MatchStatResponse]:
         query = """
             SELECT MatchId, PlayerId, CoinsPocketed, StrikersPocketed, CoinsFined, ShotsTaken

@@ -83,8 +83,11 @@ class StatsRepository:
                 roster.TeamName,
                 ISNULL(stats.MatchesPlayed, 0) AS MatchesPlayed,
                 ISNULL(stats.CoinsPocketed, 0) AS CoinsPocketed,
-                ISNULL(stats.CoinsFined, 0) AS CoinsFined,
-                ISNULL(stats.StrikersPocketed, 0) AS StrikersPocketed
+                ISNULL(stats.OpponentCoinsPocketed, 0) AS OpponentCoinsPocketed,
+                ISNULL(stats.StrikersPocketed, 0) AS StrikersPocketed,
+                ISNULL(stats.SingleFines, 0) AS SingleFines,
+                ISNULL(stats.DoubleFines, 0) AS DoubleFines,
+                ISNULL(stats.CoinsFined, 0) AS CoinsFined
             FROM tblPlayers p
             INNER JOIN (
                 SELECT pst.PlayerId, pst.TeamId, t.Name AS TeamName
@@ -101,8 +104,11 @@ class StatsRepository:
                     ms.PlayerId,
                     COUNT(DISTINCT m.Id) AS MatchesPlayed,
                     SUM(ISNULL(ms.CoinsPocketed, 0)) AS CoinsPocketed,
-                    SUM(ISNULL(ms.CoinsFined, 0)) AS CoinsFined,
-                    SUM(ISNULL(ms.StrikersPocketed, 0)) AS StrikersPocketed
+                    SUM(ISNULL(ms.OpponentCoinsPocketed, 0)) AS OpponentCoinsPocketed,
+                    SUM(ISNULL(ms.StrikersPocketed, 0)) AS StrikersPocketed,
+                    SUM(ISNULL(ms.SingleFines, 0)) AS SingleFines,
+                    SUM(ISNULL(ms.DoubleFines, 0)) AS DoubleFines,
+                    SUM(ISNULL(ms.CoinsFined, 0)) AS CoinsFined
                 FROM tblMatchStats ms
                 INNER JOIN tblMatches m
                     ON m.Id = ms.MatchId
@@ -129,8 +135,11 @@ class StatsRepository:
                 team_name=row.get("TeamName"),
                 matches_played=int(row.get("MatchesPlayed") or 0),
                 coins_pocketed=int(row.get("CoinsPocketed") or 0),
-                coins_fined=int(row.get("CoinsFined") or 0),
+                opponent_coins_pocketed=int(row.get("OpponentCoinsPocketed") or 0),
                 strikers_pocketed=int(row.get("StrikersPocketed") or 0),
+                single_fines=int(row.get("SingleFines") or 0),
+                double_fines=int(row.get("DoubleFines") or 0),
+                coins_fined=int(row.get("CoinsFined") or 0),
             )
             for row in cursor.fetchall()
         ]

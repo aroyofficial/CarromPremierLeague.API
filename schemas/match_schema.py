@@ -37,7 +37,7 @@ class MatchUpdateRequest(BaseModel):
     extra: Optional[int] = Field(default=None, ge=0)
     golden_strike: Optional[bool] = None
     status: Optional[int] = Field(default=None, ge=1, le=3)
-    net_points: Optional[int] = Field(default=None, ge=0, le=255)
+    net_points: Optional[int] = Field(default=None, ge=0, le=9)
     outcome: Optional[int] = Field(default=None, ge=1, le=3)
     toss_outcome: Optional[int] = Field(default=None, ge=1, le=3)
 
@@ -64,7 +64,7 @@ class MatchOrderResponse(BaseModel):
 
 class MatchStatUpsertItem(BaseModel):
     player_id: int = Field(gt=0)
-    coins_pocketed: int = Field(default=0, ge=0, le=255)
+    coins_pocketed: int = Field(default=0, ge=0, le=9)
     strikers_pocketed: int = Field(default=0, ge=0, le=255)
     coins_fined: int = Field(default=0, ge=0, le=255)
     shots_taken: int = Field(default=0, ge=0, le=255)
