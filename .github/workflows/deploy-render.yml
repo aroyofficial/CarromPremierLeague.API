@@ -44,24 +44,32 @@ jobs:
           done
           exit "${missing}"
 
-      - name: Configure the API authentication secret
+      - name: Configure API authentication settings
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
           CPL_AUTH_JWT_SECRET: ${{ secrets.CPL_AUTH_JWT_SECRET }}
         run: |
           set -euo pipefail
-          payload="$(jq -n --arg value "${CPL_AUTH_JWT_SECRET}" '{value: $value}')"
-          http_code="$(curl -sS -o /tmp/render-env-var.json -w "%{http_code}" -X PUT \
-            "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/env-vars/CPL_AUTH_JWT_SECRET" \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "${payload}")"
-          if [ "${http_code}" != "200" ]; then
-            cat /tmp/render-env-var.json
-            echo "::error::Render rejected the authentication-secret update (HTTP ${http_code})."
-            exit 1
-          fi
+          set_env_var() {
+            local key="$1"
+            local value="$2"
+            local payload
+            local http_code
+            payload="$(jq -n --arg value "${value}" '{value: $value}')"
+            http_code="$(curl -sS -o /tmp/render-env-var.json -w "%{http_code}" -X PUT \
+              "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/env-vars/${key}" \
+              -H "Authorization: Bearer ${RENDER_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "${payload}")"
+            if [ "${http_code}" != "200" ]; then
+              cat /tmp/render-env-var.json
+              echo "::error::Render rejected the ${key} update (HTTP ${http_code})."
+              exit 1
+            fi
+          }
+          set_env_var "CPL_AUTH_JWT_SECRET" "${CPL_AUTH_JWT_SECRET}"
+          set_env_var "CPL_AUTH_TOKEN_EXPIRE_MINUTES" "60"
 
       - name: Ask Render to deploy this commit
         env:
