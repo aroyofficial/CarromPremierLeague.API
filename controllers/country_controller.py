@@ -24,6 +24,5 @@ class CountryController:
     def update(self, country_id: int, request: CountryUpdateRequest) -> CountryResponse:
         return self.service.update(country_id, request)
 
-    def delete(self, country_id: int) -> dict:
-        self.service.delete(country_id)
-        return {"message": "Country deleted successfully"}
+    def delete(self, country_id: int) -> bool:
+        return self.service.delete(country_id)

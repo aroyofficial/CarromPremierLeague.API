@@ -39,11 +39,18 @@ class SqlServerCursor:
     def execute(self, query: str, params: tuple[Any, ...] | list[Any] | None = None):
         query = _sql_server_query(query)
         values = tuple(params or ())
+        is_insert = query.lstrip().upper().startswith("INSERT")
+        if is_insert:
+            # SCOPE_IDENTITY() only survives inside the same batch. A follow-up
+            # execute starts a new batch and returns NULL.
+            query = query.rstrip().rstrip(";") + "; SELECT CAST(SCOPE_IDENTITY() AS BIGINT) AS Id"
         self._cursor.execute(query, values)
 
-        if query.lstrip().upper().startswith("INSERT"):
-            self._cursor.execute("SELECT CAST(SCOPE_IDENTITY() AS BIGINT) AS Id")
-            row = self._cursor.fetchone()
+        if is_insert:
+            while self._cursor.description is None:
+                if not self._cursor.nextset():
+                    break
+            row = self._cursor.fetchone() if self._cursor.description else None
             self.lastrowid = int(row[0]) if row and row[0] is not None else None
         return self
 

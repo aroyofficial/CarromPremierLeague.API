@@ -136,7 +136,7 @@ class PlayerRepository:
             request.first_name,
             request.last_name,
             request.date_of_birth,
-            str(request.avatar_url),
+            str(request.avatar_url) if request.avatar_url else None,
             request.nationality_id
         ))
 
@@ -165,7 +165,7 @@ class PlayerRepository:
         for key, value in update_data.items():
             if key in field_mapping:
                 fields.append(f"{field_mapping[key]} = %s")
-                values.append(str(value) if key == "avatar_url" else value)
+                values.append(str(value) if key == "avatar_url" and value else value)
 
         if not fields:
             return self.get_by_id(player_id)

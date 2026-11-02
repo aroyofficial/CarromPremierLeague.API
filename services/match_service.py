@@ -9,6 +9,10 @@ from schemas.match_schema import (
 )
 from repositories.match_repository import MatchRepository
 from fastapi import HTTPException
+from enums.match_status import MatchStatus
+from enums.match_category import MatchCategory
+from enums.match_outcome import MatchOutcome
+from services.match_rules import validate_lifecycle_update
 
 # One team plays the white coins and the other plays the black coins.
 COINS_PER_COLOR = 9
@@ -20,6 +24,17 @@ class MatchService:
         self.repository = repository
 
     def create(self, request: MatchCreateRequest) -> MatchResponse:
+        if request.status != MatchStatus.Scheduled:
+            raise HTTPException(status_code=400, detail="New matches must be scheduled before they can start.")
+        if request.category == MatchCategory.GoldenStrike:
+            raise HTTPException(status_code=400, detail="Golden Strike is created automatically after a tied knockout match.")
+        if request.duration is not None or request.extra is not None or request.golden_strike:
+            raise HTTPException(
+                status_code=400,
+                detail="Match timing and Golden Strike are set by the match lifecycle, not when scheduling.",
+            )
+        if request.outcome != MatchOutcome.NotDecided or request.net_points is not None:
+            raise HTTPException(status_code=400, detail="A newly scheduled match cannot include a result.")
         return self.repository.create(request)
 
     def get_by_id(self, match_id: int) -> MatchResponse:
@@ -32,6 +47,8 @@ class MatchService:
         return self.repository.get_all(season_id=season_id)
 
     def update(self, match_id: int, request: MatchUpdateRequest) -> MatchResponse:
+        match = self.get_by_id(match_id)
+        validate_lifecycle_update(match, request.model_dump(exclude_unset=True))
         match = self.repository.update(match_id, request)
         if not match:
             raise HTTPException(status_code=404, detail="Match not found")
@@ -44,6 +61,10 @@ class MatchService:
     
     def get_next_match_order(self, season_id: int) -> MatchOrderResponse:
         return self.repository.get_order(season_id)
+
+    def get_stats(self, match_id: int) -> List[MatchStatResponse]:
+        self.get_by_id(match_id)
+        return self.repository.get_stats(match_id)
 
     def upsert_stats(self, match_id: int, request: MatchStatsUpsertRequest) -> List[MatchStatResponse]:
         match = self.repository.get_by_id(match_id)

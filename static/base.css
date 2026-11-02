@@ -1,0 +1,316 @@
+:root {
+  --ink: #07131d;
+  --ink-2: #0d1c2b;
+  --card: rgba(12, 28, 44, 0.78);
+  --line: rgba(141, 196, 255, 0.18);
+  --text: #e8f2fb;
+  --muted: #8ea6bd;
+  --blue: #2f9bff;
+  --blue-2: #8dccff;
+  --get: #3ddc97;
+  --post: #3b9eff;
+  --put: #f0b429;
+  --patch: #2ec4b6;
+  --delete: #ff6b6b;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(900px 420px at 50% -10%, rgba(47, 155, 255, 0.28), transparent 60%),
+    radial-gradient(700px 380px at 100% 100%, rgba(47, 155, 255, 0.08), transparent 55%),
+    var(--ink);
+}
+
+a { color: var(--blue-2); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, .path {
+  font-family: Consolas, "Cascadia Mono", "Segoe UI Mono", monospace;
+}
+
+.shell {
+  width: min(980px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 36px 0 64px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.brand strong {
+  font-size: 15px;
+  letter-spacing: 0.04em;
+}
+
+.brand span, .eyebrow {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.live-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(47, 155, 255, 0.08);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.live-link:hover { text-decoration: none; border-color: rgba(141, 196, 255, 0.45); }
+
+.beacon {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.beacon i,
+.beacon span {
+  position: absolute;
+  border-radius: 50%;
+}
+
+.beacon i {
+  inset: 2px;
+  background: var(--blue);
+  box-shadow: 0 0 12px var(--blue);
+}
+
+.beacon span {
+  inset: -4px;
+  border: 2px solid var(--blue-2);
+  animation: ripple 2.1s cubic-bezier(0.1, 0.4, 0.2, 1) infinite;
+}
+
+.beacon span:nth-child(2) { animation-delay: 0.7s; }
+.beacon span:nth-child(3) { animation-delay: 1.4s; }
+
+.live-word {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+}
+
+.stage {
+  display: grid;
+  place-items: center;
+  min-height: calc(100vh - 72px);
+  padding: 24px;
+}
+
+.health-card {
+  width: min(560px, 100%);
+  padding: 48px 40px 40px;
+  text-align: center;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(10px);
+}
+
+.health-card .beacon {
+  width: 22px;
+  height: 22px;
+  margin-right: 4px;
+}
+
+.health-card .beacon i { inset: 3px; }
+
+.health-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.health-status .live-word {
+  font-size: 42px;
+  letter-spacing: 0.28em;
+  text-indent: 0.28em;
+}
+
+.health-card h1 {
+  margin: 0 0 10px;
+  font-size: 28px;
+  font-weight: 650;
+}
+
+.health-card p {
+  margin: 0 auto;
+  max-width: 38ch;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.chips {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 26px 0 28px;
+}
+
+.chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--blue-2);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 180px;
+  padding: 12px 18px;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #041018;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.button:hover { text-decoration: none; filter: brightness(1.08); }
+
+.intro h1 {
+  margin: 0 0 8px;
+  font-size: 34px;
+}
+
+.intro p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.group {
+  margin-top: 22px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.group header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.group h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.endpoints {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.group header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.endpoint {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1.3fr) minmax(180px, 1fr);
+  gap: 12px 16px;
+  align-items: center;
+  padding: 13px 18px;
+  border-top: 1px solid rgba(141, 196, 255, 0.08);
+}
+
+.endpoint:first-child { border-top: 0; }
+
+.method {
+  justify-self: start;
+  min-width: 72px;
+  padding: 4px 0;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+}
+
+.method-get { color: var(--get); background: rgba(61, 220, 151, 0.12); }
+.method-post { color: var(--post); background: rgba(59, 158, 255, 0.14); }
+.method-put { color: var(--put); background: rgba(240, 180, 41, 0.14); }
+.method-patch { color: var(--patch); background: rgba(46, 196, 182, 0.14); }
+.method-delete { color: var(--delete); background: rgba(255, 107, 107, 0.14); }
+
+.path {
+  color: var(--text);
+  font-size: 14px;
+  word-break: break-all;
+}
+
+.query { color: var(--blue-2); }
+
+.desc {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.notes {
+  grid-column: 2 / -1;
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .endpoint {
+    grid-template-columns: auto 1fr;
+  }
+
+  .desc, .notes { grid-column: 1 / -1; }
+
+  .health-status .live-word { font-size: 32px; }
+
+  .health-card { padding: 36px 22px 28px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .beacon span { animation: none; opacity: 0.35; }
+}
+
+@keyframes ripple {
+  0% { transform: scale(0.5); opacity: 0.75; }
+  100% { transform: scale(2.35); opacity: 0; }
+}

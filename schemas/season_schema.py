@@ -28,6 +28,16 @@ class SeasonResponse(BaseModel):
         from_attributes = True
 
 
+class SeasonTeamAddRequest(BaseModel):
+    team_id: int = Field(..., gt=0)
+
+
+class SeasonTeamResponse(BaseModel):
+    team_id: int
+    team_name: str
+    logo_url: Optional[str] = None
+
+
 class SeasonListResponse(BaseModel):
     seasons: List[SeasonResponse]
 

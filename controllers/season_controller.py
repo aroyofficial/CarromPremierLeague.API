@@ -31,9 +31,19 @@ class SeasonController:
     def update(self, season_id: int, request: SeasonUpdateRequest) -> SeasonResponse:
         return self.service.update_season(season_id, request)
 
-    def delete(self, season_id: int) -> dict:
-        return self.service.delete_season(season_id)
+    def delete(self, season_id: int) -> bool:
+        self.service.delete_season(season_id)
+        return True
     
+    def get_teams(self, season_id: int):
+        return self.service.get_teams(season_id)
+
+    def add_team(self, season_id: int, team_id: int):
+        return self.service.add_team(season_id, team_id)
+
+    def remove_team(self, season_id: int, team_id: int) -> bool:
+        return self.service.remove_team(season_id, team_id)
+
     def get_league_table(self, season_id: int) -> LeagueTableResponse:
         return self.service.get_league_table(season_id)
 

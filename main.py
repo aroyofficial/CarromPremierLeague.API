@@ -2,9 +2,12 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 
+from core.admin_seed import ensure_seed_admin
 from core.database import Database
 from core.config import settings
 from core.exceptions import add_exception_handlers
+from routes.system_routes import router as system_router
+from routes.auth_routes import router as auth_router
 from routes.season_routes import router as season_router
 from routes.team_routes import router as team_router
 from routes.player_routes import router as player_router
@@ -16,6 +19,11 @@ from routes.match_routes import router as match_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Database.initialize()
+    connection = Database.get_connection()
+    try:
+        ensure_seed_admin(connection)
+    finally:
+        connection.close()
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -28,6 +36,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(system_router)
+app.include_router(auth_router)
 app.include_router(season_router)
 app.include_router(team_router)
 app.include_router(player_router)

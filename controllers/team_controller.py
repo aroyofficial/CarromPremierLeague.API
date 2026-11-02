@@ -41,7 +41,7 @@ class TeamController:
 
         return team
 
-    def delete(self, team_id: int) -> dict:
+    def delete(self, team_id: int) -> bool:
         success = self.service.delete(team_id)
 
         if not success:
@@ -50,4 +50,4 @@ class TeamController:
                 detail="Team not found"
             )
 
-        return {"message": "Team deleted successfully"}
+        return True

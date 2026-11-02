@@ -6,7 +6,8 @@ from schemas.season_schema import (
     SeasonUpdateRequest,
     SeasonResponse,
     LeagueTableResponse,
-    LeagueTableStanding
+    LeagueTableStanding,
+    SeasonTeamResponse,
 )
 class SeasonRepository:
 
@@ -122,6 +123,58 @@ class SeasonRepository:
         cursor.execute(query, (season_id,))
 
         return cursor.rowcount > 0
+
+    def get_teams(self, season_id: int) -> List[SeasonTeamResponse]:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT t.Id AS TeamId, t.Name AS TeamName, t.LogoUrl
+            FROM tblSeasonsTeams st
+            INNER JOIN tblTeams t ON t.Id = st.TeamId AND t.Void = 0
+            WHERE st.SeasonId = %s AND st.Void = 0
+            ORDER BY t.Name
+            """,
+            (season_id,),
+        )
+        return [
+            SeasonTeamResponse(team_id=row["TeamId"], team_name=row["TeamName"], logo_url=row["LogoUrl"])
+            for row in cursor.fetchall()
+        ]
+
+    def add_team(self, season_id: int, team_id: int) -> None:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            UPDATE tblSeasonsTeams
+            SET Void = 0, UpdatedAt = SYSUTCDATETIME()
+            WHERE SeasonId = %s AND TeamId = %s
+            """,
+            (season_id, team_id),
+        )
+        if cursor.rowcount == 0:
+            cursor.execute(
+                "INSERT INTO tblSeasonsTeams (SeasonId, TeamId) VALUES (%s, %s)",
+                (season_id, team_id),
+            )
+        self.db.commit()
+
+    def remove_team(self, season_id: int, team_id: int) -> bool:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            UPDATE tblSeasonsTeams
+            SET Void = 1, UpdatedAt = SYSUTCDATETIME()
+            WHERE SeasonId = %s AND TeamId = %s AND Void = 0
+            """,
+            (season_id, team_id),
+        )
+        self.db.commit()
+        return cursor.rowcount > 0
+
+    def team_exists(self, team_id: int) -> bool:
+        cursor = self.db.cursor()
+        cursor.execute("SELECT 1 FROM tblTeams WHERE Id = %s AND Void = 0", (team_id,))
+        return cursor.fetchone() is not None
 
     def exists_by_name(self, name: str) -> bool:
         query = """

@@ -28,6 +28,5 @@ class PlayerController:
     def update(self, player_id: int, request: PlayerUpdateRequest) -> PlayerResponse:
         return self.service.update(player_id, request)
 
-    def delete(self, player_id: int) -> dict:
-        self.service.delete(player_id)
-        return {"message": "Player deleted successfully"}
+    def delete(self, player_id: int) -> bool:
+        return self.service.delete(player_id)

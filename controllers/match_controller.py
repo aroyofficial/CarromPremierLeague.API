@@ -29,5 +29,8 @@ class MatchController:
     def get_next_match_order(self, season_id: int):
         return self.service.get_next_match_order(season_id)
 
+    def get_stats(self, match_id: int):
+        return self.service.get_stats(match_id)
+
     def upsert_stats(self, match_id: int, request: MatchStatsUpsertRequest):
         return self.service.upsert_stats(match_id, request)

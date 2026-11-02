@@ -27,6 +27,8 @@ class Settings:
         self.APP_HOST: str = self._get_env("CPL_APP_HOST")
         self.APP_PORT: int = self._get_int_env("CPL_APP_PORT")
         self.APP_ALLOWED_HOSTS: list[str] = self._get_env("CPL_APP_ALLOWED_HOSTS").split(",")
+        self.AUTH_JWT_SECRET: str = self._get_env("CPL_AUTH_JWT_SECRET")
+        self.AUTH_TOKEN_EXPIRE_MINUTES: int = self._get_int_env("CPL_AUTH_TOKEN_EXPIRE_MINUTES")
 
         self.DB_HOST: str = self._get_env("CPL_DB_HOST")
         self.DB_PORT: int = self._get_int_env("CPL_DB_PORT")

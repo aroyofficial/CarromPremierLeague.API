@@ -14,6 +14,7 @@ from schemas.player_schema import (
 )
 from core.database import get_db
 from core.response import ApiResponse
+from routes.auth_routes import get_current_admin
 
 
 router = APIRouter(
@@ -66,7 +67,7 @@ def get_by_id(
     )
 
 
-@router.post("/", response_model=ApiResponse[PlayerResponse])
+@router.post("/", response_model=ApiResponse[PlayerResponse], dependencies=[Depends(get_current_admin)])
 def create(
     request: PlayerCreateRequest,
     controller: PlayerController = Depends(get_controller)
@@ -80,7 +81,7 @@ def create(
     )
 
 
-@router.patch("/{player_id}", response_model=ApiResponse[PlayerResponse])
+@router.patch("/{player_id}", response_model=ApiResponse[PlayerResponse], dependencies=[Depends(get_current_admin)])
 def update(
     player_id: int,
     request: PlayerUpdateRequest,
@@ -95,7 +96,7 @@ def update(
     )
 
 
-@router.delete("/{player_id}", response_model=ApiResponse[bool])
+@router.delete("/{player_id}", response_model=ApiResponse[bool], dependencies=[Depends(get_current_admin)])
 def delete(
     player_id: int,
     controller: PlayerController = Depends(get_controller)

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{APP_NAME}} · Health</title>
+  <style>{{BASE_CSS}}</style>
+</head>
+<body>
+  <main class="stage">
+    <section class="health-card">
+      <div class="health-status">
+        <div class="beacon" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+          <i></i>
+        </div>
+        <div class="live-word">LIVE</div>
+      </div>
+      <p class="eyebrow">{{APP_NAME}}</p>
+      <h1>The API service is live</h1>
+      <p>This process is up and accepting requests.</p>
+      <div class="chips">
+        <span class="chip">{{APP_ENV}}</span>
+        <span class="chip">health</span>
+      </div>
+      <a class="button" href="/">View endpoints</a>
+    </section>
+  </main>
+</body>
+</html>

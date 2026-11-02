@@ -6,7 +6,8 @@ from schemas.season_schema import (
     SeasonCreateRequest,
     SeasonUpdateRequest,
     SeasonResponse,
-    LeagueTableResponse
+    LeagueTableResponse,
+    SeasonTeamResponse,
 )
 from repositories.season_repository import SeasonRepository
 
@@ -70,6 +71,23 @@ class SeasonService:
 
         return {"message": "Season deleted successfully"}
     
+    def get_teams(self, season_id: int) -> List[SeasonTeamResponse]:
+        self.get_season(season_id)
+        return self.repository.get_teams(season_id)
+
+    def add_team(self, season_id: int, team_id: int) -> List[SeasonTeamResponse]:
+        self.get_season(season_id)
+        if not self.repository.team_exists(team_id):
+            raise HTTPException(status_code=404, detail="Team not found")
+        self.repository.add_team(season_id, team_id)
+        return self.repository.get_teams(season_id)
+
+    def remove_team(self, season_id: int, team_id: int) -> bool:
+        self.get_season(season_id)
+        if not self.repository.remove_team(season_id, team_id):
+            raise HTTPException(status_code=404, detail="Team is not part of this season")
+        return True
+
     def get_league_table(self, season_id: int) -> LeagueTableResponse:
         if season_id <= 0:
             raise ValueError("Invalid season id")

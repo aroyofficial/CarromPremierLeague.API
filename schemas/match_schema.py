@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List
-from datetime import date
+from datetime import date, datetime
 
 from enums.match_category import MatchCategory
 from enums.match_outcome import MatchOutcome
@@ -57,6 +57,8 @@ class MatchResponse(BaseModel):
     outcome: Optional[int]
     order: int
     toss_outcome: int
+    started_at: Optional[datetime] = None
+    extra_started_at: Optional[datetime] = None
 
 class MatchOrderResponse(BaseModel):
     order: int

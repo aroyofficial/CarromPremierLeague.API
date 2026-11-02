@@ -27,10 +27,10 @@ class StatsRepository:
             team1_id=row["TeamAId"],
             team2_id=row["TeamBId"],
             matches_played=row.get("TotalMatches", 0),
-            team1_wins=row.get("TeamAWins", 0),
-            team2_wins=row.get("TeamBWins", 0),
-            team1_net_points=row.get("TeamANetPoints", 0),
-            team2_net_points=row.get("TeamBNetPoints", 0),
+            team1_wins=int(row.get("TeamAWins") or 0),
+            team2_wins=int(row.get("TeamBWins") or 0),
+            team1_net_points=int(row.get("TeamANetPoints") or 0),
+            team2_net_points=int(row.get("TeamBNetPoints") or 0),
         )
 
     def get_season_top_coin_potters(

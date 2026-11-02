@@ -44,7 +44,9 @@ class MatchRepository:
             net_points=row["NetPoints"],
             outcome=row["Outcome"],
             order=row["Order"],
-            toss_outcome=row["TossOutcome"]
+            toss_outcome=row["TossOutcome"],
+            started_at=row.get("StartedAt"),
+            extra_started_at=row.get("ExtraStartedAt"),
         )
 
     @staticmethod
@@ -132,7 +134,10 @@ class MatchRepository:
         # teams play Golden Strike before the final is assigned.
         # Larger leagues: the same applies to #1 and to the eliminator places
         # (#2 and #3), including the cut with the first team that misses out.
-        boundaries = [1, 2] if participant_count == 4 else [1, 2, 3]
+        # Seed the four-team knockout bracket deterministically. For a larger
+        # league, a tie across the qualification cut (#4/#5) also needs a
+        # Golden Strike before the bracket can be built.
+        boundaries = [1, 2, 3] if participant_count == 4 else [1, 2, 3, 4]
         groups: list[list[int]] = []
         seen: set[tuple[int, ...]] = set()
 
@@ -360,7 +365,7 @@ class MatchRepository:
             SELECT Team1, Team2, [Order]
             FROM tblMatches
             WHERE SeasonId = %s
-              AND Category IN (%s, %s)
+              AND Category IN (%s, %s, %s, %s)
               AND Status = 3
               AND Outcome = 3
               AND Extra IS NOT NULL
@@ -372,6 +377,8 @@ class MatchRepository:
             (
                 season_id,
                 MatchCategory.Eliminator.value,
+                MatchCategory.Qualifier1.value,
+                MatchCategory.Qualifier2.value,
                 MatchCategory.Final.value,
             ),
         )
@@ -404,7 +411,8 @@ class MatchRepository:
         return int((cursor.fetchone() or {}).get("PendingCount") or 0) > 0
 
     def _sync_playoff_schedule(self, season_id: int) -> None:
-        self._schedule_knockout_draw_golden_strikes(season_id)
+        # Golden Strike is an operator decision inside the finished knockout
+        # match. A declined Golden Strike must not create another fixture.
         if self._has_pending_season_golden_strikes(season_id):
             return
         if not self._all_league_matches_completed(season_id):
@@ -432,33 +440,46 @@ class MatchRepository:
             return
 
         ranked_team_ids = [int(row["TeamId"]) for row in ranked_rows]
-        if participant_count == 4:
-            self._ensure_knockout_match(
-                season_id,
-                MatchCategory.Final,
-                ranked_team_ids[0],
-                ranked_team_ids[1],
-            )
+        if len(ranked_team_ids) < 4:
             return
 
-        if len(ranked_team_ids) < 3:
-            return
-
+        qualifier1 = self._ensure_knockout_match(
+            season_id,
+            MatchCategory.Qualifier1,
+            ranked_team_ids[0],
+            ranked_team_ids[1],
+        )
         eliminator = self._ensure_knockout_match(
             season_id,
             MatchCategory.Eliminator,
-            ranked_team_ids[1],
             ranked_team_ids[2],
+            ranked_team_ids[3],
         )
+        qualifier1_winner = self._knockout_winner(season_id, qualifier1)
         eliminator_winner = self._knockout_winner(season_id, eliminator)
-        if eliminator_winner is None:
+        if qualifier1_winner is None or eliminator_winner is None:
+            return
+
+        qualifier1_loser = (
+            int(qualifier1["Team2"])
+            if qualifier1_winner == int(qualifier1["Team1"])
+            else int(qualifier1["Team1"])
+        )
+        qualifier2 = self._ensure_knockout_match(
+            season_id,
+            MatchCategory.Qualifier2,
+            qualifier1_loser,
+            eliminator_winner,
+        )
+        qualifier2_winner = self._knockout_winner(season_id, qualifier2)
+        if qualifier2_winner is None:
             return
 
         self._ensure_knockout_match(
             season_id,
             MatchCategory.Final,
-            ranked_team_ids[0],
-            eliminator_winner,
+            qualifier1_winner,
+            qualifier2_winner,
         )
         
     def create(self, request: MatchCreateRequest) -> MatchResponse:
@@ -586,7 +607,6 @@ class MatchRepository:
             UPDATE tblMatches
             SET {', '.join(fields)}
             WHERE Id = %s AND Void = 0
-            AND Status <> 3
         """
 
         values.append(match_id)
@@ -603,6 +623,8 @@ class MatchRepository:
                 MatchCategory.League.value,
                 MatchCategory.GoldenStrike.value,
                 MatchCategory.Eliminator.value,
+                MatchCategory.Qualifier1.value,
+                MatchCategory.Qualifier2.value,
                 MatchCategory.Final.value,
             )
         ):
