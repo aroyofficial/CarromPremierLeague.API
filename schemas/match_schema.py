@@ -67,6 +67,9 @@ class MatchOrderResponse(BaseModel):
 class MatchStatUpsertItem(BaseModel):
     player_id: int = Field(gt=0)
     coins_pocketed: int = Field(default=0, ge=0, le=9)
+    opponent_coins_pocketed: int = Field(default=0, ge=0, le=9)
+    single_fines: int = Field(default=0, ge=0, le=255)
+    double_fines: int = Field(default=0, ge=0, le=255)
     strikers_pocketed: int = Field(default=0, ge=0, le=255)
     coins_fined: int = Field(default=0, ge=0, le=255)
     shots_taken: int = Field(default=0, ge=0, le=255)
@@ -80,6 +83,9 @@ class MatchStatResponse(BaseModel):
     match_id: int
     player_id: int
     coins_pocketed: Optional[int]
+    opponent_coins_pocketed: int = 0
+    single_fines: int = 0
+    double_fines: int = 0
     strikers_pocketed: Optional[int]
     coins_fined: Optional[int]
     shots_taken: Optional[int]

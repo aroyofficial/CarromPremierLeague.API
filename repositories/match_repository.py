@@ -58,6 +58,9 @@ class MatchRepository:
             match_id=row["MatchId"],
             player_id=row["PlayerId"],
             coins_pocketed=row["CoinsPocketed"],
+            opponent_coins_pocketed=int(row.get("OpponentCoinsPocketed") or 0),
+            single_fines=int(row.get("SingleFines") or 0),
+            double_fines=int(row.get("DoubleFines") or 0),
             strikers_pocketed=row["StrikersPocketed"],
             coins_fined=row["CoinsFined"],
             shots_taken=row["ShotsTaken"]
@@ -678,19 +681,25 @@ class MatchRepository:
         query = """
             MERGE dbo.tblMatchStats AS target
             USING (SELECT ? AS MatchId, ? AS PlayerId, ? AS CoinsPocketed,
+                          ? AS OpponentCoinsPocketed, ? AS SingleFines, ? AS DoubleFines,
                           ? AS StrikersPocketed, ? AS CoinsFined, ? AS ShotsTaken) AS source
             ON target.MatchId = source.MatchId AND target.PlayerId = source.PlayerId
             WHEN MATCHED THEN UPDATE SET
                 CoinsPocketed = source.CoinsPocketed,
+                OpponentCoinsPocketed = source.OpponentCoinsPocketed,
+                SingleFines = source.SingleFines,
+                DoubleFines = source.DoubleFines,
                 StrikersPocketed = source.StrikersPocketed,
                 CoinsFined = source.CoinsFined,
                 ShotsTaken = source.ShotsTaken,
                 Void = 0,
                 UpdatedAt = SYSUTCDATETIME()
             WHEN NOT MATCHED THEN INSERT
-                (MatchId, PlayerId, CoinsPocketed, StrikersPocketed, CoinsFined, ShotsTaken)
+                (MatchId, PlayerId, CoinsPocketed, OpponentCoinsPocketed, SingleFines, DoubleFines,
+                 StrikersPocketed, CoinsFined, ShotsTaken)
                 VALUES
-                (source.MatchId, source.PlayerId, source.CoinsPocketed, source.StrikersPocketed, source.CoinsFined, source.ShotsTaken);
+                (source.MatchId, source.PlayerId, source.CoinsPocketed, source.OpponentCoinsPocketed,
+                 source.SingleFines, source.DoubleFines, source.StrikersPocketed, source.CoinsFined, source.ShotsTaken);
         """
         for item in stats:
             cursor.execute(
@@ -699,6 +708,9 @@ class MatchRepository:
                     match_id,
                     item.player_id,
                     item.coins_pocketed,
+                    item.opponent_coins_pocketed,
+                    item.single_fines,
+                    item.double_fines,
                     item.strikers_pocketed,
                     item.coins_fined,
                     item.shots_taken,
@@ -745,7 +757,8 @@ class MatchRepository:
 
     def get_stats(self, match_id: int) -> List[MatchStatResponse]:
         query = """
-            SELECT MatchId, PlayerId, CoinsPocketed, StrikersPocketed, CoinsFined, ShotsTaken
+            SELECT MatchId, PlayerId, CoinsPocketed, OpponentCoinsPocketed, SingleFines, DoubleFines,
+                   StrikersPocketed, CoinsFined, ShotsTaken
             FROM tblMatchStats
             WHERE MatchId = %s
               AND Void = 0

@@ -75,6 +75,11 @@ class MatchService:
         if len(player_ids) != len(set(player_ids)):
             raise HTTPException(status_code=400, detail="Duplicate player_id in stats payload")
 
+        for item in request.stats:
+            derived_fines = item.single_fines + 2 * item.double_fines
+            if derived_fines > 255:
+                raise HTTPException(status_code=400, detail="Fines for one player cannot exceed 255 coins.")
+            item.coins_fined = derived_fines
         self._validate_coin_counts(match_id, request.stats)
         return self.repository.upsert_stats(match_id, request.stats)
 
@@ -101,6 +106,7 @@ class MatchService:
 
         for item in stats:
             pocketed[item.player_id] = item.coins_pocketed
+            opponent[item.player_id] = item.opponent_coins_pocketed
 
         own = {}
         taken = {}
