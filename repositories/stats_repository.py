@@ -51,6 +51,10 @@ class StatsRepository:
                     team_id=row.get("TeamId"),
                     team_name=row.get("TeamName"),
                     coins_pocketed=row.get("CoinsPocketed", 0),
+                    opponent_coins_pocketed=int(row.get("OpponentCoinsPocketed") or 0),
+                    single_fines=int(row.get("SingleFines") or 0),
+                    double_fines=int(row.get("DoubleFines") or 0),
+                    net_coins=int(row.get("NetCoins") or 0),
                     coins_fined=row.get("CoinsFined", 0),
                     strikers_pocketed=row.get("StrikersPocketed", 0),
                 )
@@ -120,7 +124,16 @@ class StatsRepository:
             ) stats
                 ON stats.PlayerId = p.Id
             WHERE p.Void = 0
-            ORDER BY p.FirstName ASC, p.LastName ASC
+            ORDER BY
+                ISNULL(stats.CoinsPocketed, 0) - ISNULL(stats.CoinsFined, 0) DESC,
+                ISNULL(stats.CoinsPocketed, 0) DESC,
+                ISNULL(stats.DoubleFines, 0) ASC,
+                ISNULL(stats.SingleFines, 0) ASC,
+                ISNULL(stats.OpponentCoinsPocketed, 0) ASC,
+                ISNULL(stats.StrikersPocketed, 0) ASC,
+                p.FirstName ASC,
+                p.LastName ASC,
+                p.Id ASC
             """,
             (season_id, MatchStatus.Played.value, season_id),
         )
@@ -140,6 +153,7 @@ class StatsRepository:
                 single_fines=int(row.get("SingleFines") or 0),
                 double_fines=int(row.get("DoubleFines") or 0),
                 coins_fined=int(row.get("CoinsFined") or 0),
+                net_coins=int(row.get("CoinsPocketed") or 0) - int(row.get("CoinsFined") or 0),
             )
             for row in cursor.fetchall()
         ]

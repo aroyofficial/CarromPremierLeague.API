@@ -637,6 +637,28 @@ class MatchRepository:
 
         return updated_match
 
+    def reset(self, match_id: int) -> Optional[MatchResponse]:
+        cursor = self.db.cursor()
+        cursor.execute("DELETE FROM tblMatchStats WHERE MatchId = %s", (match_id,))
+        cursor.execute(
+            """
+            UPDATE tblMatches
+            SET Status = %s,
+                Outcome = %s,
+                TossOutcome = %s,
+                NetPoints = NULL,
+                Duration = NULL,
+                Extra = NULL,
+                GoldenStrike = 0,
+                StartedAt = NULL,
+                ExtraStartedAt = NULL
+            WHERE Id = %s AND Void = 0
+            """,
+            (MatchStatus.Scheduled.value, 3, 3, match_id),
+        )
+        self.db.commit()
+        return self.get_by_id(match_id)
+
     def soft_delete(self, match_id: int) -> bool:
         query = """
             UPDATE tblMatches
@@ -677,12 +699,17 @@ class MatchRepository:
         return MatchOrderResponse(order=row["DesiredOrder"])
 
     def upsert_stats(self, match_id: int, stats: List[MatchStatUpsertItem]) -> List[MatchStatResponse]:
+        if not stats:
+            return self.get_stats(match_id)
         cursor = self.db.cursor()
-        query = """
+        # One statement for the whole scorecard, so the nine-coin trigger sees the final state
+        # instead of a half-applied one.
+        rows = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(stats))
+        query = f"""
             MERGE dbo.tblMatchStats AS target
-            USING (SELECT ? AS MatchId, ? AS PlayerId, ? AS CoinsPocketed,
-                          ? AS OpponentCoinsPocketed, ? AS SingleFines, ? AS DoubleFines,
-                          ? AS StrikersPocketed, ? AS CoinsFined, ? AS ShotsTaken) AS source
+            USING (VALUES {rows}) AS source
+                (MatchId, PlayerId, CoinsPocketed, OpponentCoinsPocketed, SingleFines, DoubleFines,
+                 StrikersPocketed, CoinsFined, ShotsTaken)
             ON target.MatchId = source.MatchId AND target.PlayerId = source.PlayerId
             WHEN MATCHED THEN UPDATE SET
                 CoinsPocketed = source.CoinsPocketed,
@@ -701,9 +728,9 @@ class MatchRepository:
                 (source.MatchId, source.PlayerId, source.CoinsPocketed, source.OpponentCoinsPocketed,
                  source.SingleFines, source.DoubleFines, source.StrikersPocketed, source.CoinsFined, source.ShotsTaken);
         """
+        values = []
         for item in stats:
-            cursor.execute(
-                query,
+            values.extend(
                 (
                     match_id,
                     item.player_id,
@@ -714,8 +741,9 @@ class MatchRepository:
                     item.strikers_pocketed,
                     item.coins_fined,
                     item.shots_taken,
-                ),
+                )
             )
+        cursor.execute(query, tuple(values))
         self.db.commit()
 
         return self.get_stats(match_id)
@@ -740,7 +768,9 @@ class MatchRepository:
             SELECT ms.PlayerId,
                    pst.TeamId,
                    ISNULL(ms.CoinsPocketed, 0) AS CoinsPocketed,
-                   ISNULL(ms.OpponentCoinsPocketed, 0) AS OpponentCoinsPocketed
+                   ISNULL(ms.OpponentCoinsPocketed, 0) AS OpponentCoinsPocketed,
+                   ISNULL(ms.SingleFines, 0) AS SingleFines,
+                   ISNULL(ms.DoubleFines, 0) AS DoubleFines
             FROM tblMatchStats ms
             JOIN tblMatches m ON m.Id = ms.MatchId
             JOIN tblPlayersSeasonsTeams pst

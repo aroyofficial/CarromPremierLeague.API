@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_serializer, model_validator
 from typing import Optional, List
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from enums.match_category import MatchCategory
 from enums.match_outcome import MatchOutcome
@@ -60,13 +60,22 @@ class MatchResponse(BaseModel):
     started_at: Optional[datetime] = None
     extra_started_at: Optional[datetime] = None
 
+    # SQL Server stores these with SYSUTCDATETIME() and returns them without an offset.
+    @field_serializer("started_at", "extra_started_at")
+    def _utc(self, value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
 class MatchOrderResponse(BaseModel):
     order: int
 
 
 class MatchStatUpsertItem(BaseModel):
     player_id: int = Field(gt=0)
-    coins_pocketed: int = Field(default=0, ge=0, le=9)
+    coins_pocketed: int = Field(default=0, ge=0, le=255)
     opponent_coins_pocketed: int = Field(default=0, ge=0, le=9)
     single_fines: int = Field(default=0, ge=0, le=255)
     double_fines: int = Field(default=0, ge=0, le=255)

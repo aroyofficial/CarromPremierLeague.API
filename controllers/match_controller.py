@@ -23,6 +23,9 @@ class MatchController:
     def update(self, match_id: int, request: MatchUpdateRequest):
         return self.service.update(match_id, request)
 
+    def reset(self, match_id: int):
+        return self.service.reset(match_id)
+
     def delete(self, match_id: int):
         return self.service.delete(match_id)
     

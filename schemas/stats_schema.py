@@ -20,6 +20,10 @@ class TopCoinPotterResponse(BaseModel):
     team_id: Optional[int] = None
     team_name: Optional[str] = None
     coins_pocketed: int
+    opponent_coins_pocketed: int = 0
+    single_fines: int = 0
+    double_fines: int = 0
+    net_coins: int = 0
     coins_fined: int
     strikers_pocketed: int
 
@@ -43,6 +47,7 @@ class PlayerSeasonStatResponse(BaseModel):
     single_fines: int = 0
     double_fines: int = 0
     coins_fined: int = 0
+    net_coins: int = 0
 
 
 class SeasonPlayerStatsResponse(BaseModel):
