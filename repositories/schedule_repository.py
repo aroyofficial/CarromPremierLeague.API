@@ -43,17 +43,26 @@ def _fine_coins(player: SchedulePlayerStat) -> int:
     return player.coins_fined or 0
 
 
+def _colour_score(players: list[SchedulePlayerStat], team_id: int, other_id: int) -> int:
+    own = fines = other_opponent = 0
+    for player in players:
+        if player.team_id == team_id:
+            own += player.coins_pocketed or 0
+            fines += _fine_coins(player)
+        elif player.team_id == other_id:
+            other_opponent += player.opponent_coins_pocketed or 0
+    # Coins of this colour pocketed by the other team count. A due fine floors own coins at zero.
+    return max(0, own - fines) + other_opponent
+
+
 def _side_scores(players: list[SchedulePlayerStat], team1_id: int, team2_id: int) -> Optional[tuple[int, int]]:
-    scores = {team1_id: 0, team2_id: 0}
     seen = {team1_id: False, team2_id: False}
     for player in players:
-        if player.team_id not in scores:
-            continue
-        seen[player.team_id] = True
-        scores[player.team_id] += (player.coins_pocketed or 0) - _fine_coins(player)
+        if player.team_id in seen:
+            seen[player.team_id] = True
     if not seen[team1_id] or not seen[team2_id]:
         return None
-    return scores[team1_id], scores[team2_id]
+    return _colour_score(players, team1_id, team2_id), _colour_score(players, team2_id, team1_id)
 
 
 def _score_result(match: ScheduleMatch) -> Optional[tuple[int, int]]:
