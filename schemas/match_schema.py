@@ -23,7 +23,11 @@ class MatchCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_teams(self):
-        if self.team1 is None and self.team2 is None and self.category == MatchCategory.Final:
+        if (
+            self.team1 is None
+            and self.team2 is None
+            and self.category in (MatchCategory.Final, MatchCategory.Eliminator)
+        ):
             return self
         if self.team1 == self.team2:
             raise ValueError("team1 and team2 cannot be the same")
