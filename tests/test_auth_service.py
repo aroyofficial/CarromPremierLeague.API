@@ -84,10 +84,37 @@ class FakeAdminRepository:
         return True
 
 
+class FakePermissionRepository:
+    def __init__(self, admins: FakeAdminRepository):
+        self.admins = admins
+        self.grants: dict[int, set[str]] = {}
+
+    def codes_for(self, admin_id):
+        from core.permissions import ordered
+        return ordered(self.grants.get(admin_id, set()))
+
+    def codes_by_admin(self):
+        return {admin_id: self.codes_for(admin_id) for admin_id in self.grants}
+
+    def active_holder_ids(self, code, lock=False):
+        return {
+            admin_id
+            for admin_id, codes in self.grants.items()
+            if code in codes
+            and not self.admins.records[admin_id]["Void"]
+            and self.admins.records[admin_id]["IsActive"]
+        }
+
+    def change(self, admin_id, grant, revoke, granted_by):
+        codes = self.grants.setdefault(admin_id, set())
+        codes.difference_update(revoke)
+        codes.update(grant)
+
+
 class AuthServiceTests(unittest.TestCase):
     def setUp(self):
         self.repository = FakeAdminRepository()
-        self.service = AuthService(self.repository)
+        self.service = AuthService(self.repository, FakePermissionRepository(self.repository))
         self.primary = self.service.bootstrap_admin(
             AdminCreateRequest(username="primary-admin", password="correct-horse-battery")
         )

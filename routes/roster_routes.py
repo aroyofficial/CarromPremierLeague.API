@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 
 from core.database import get_db
 from core.response import ApiResponse
-from routes.auth_routes import get_current_admin
+from routes.auth_routes import require_permission
 from repositories.roster_repository import RosterRepository
 from services.roster_service import RosterService
 from controllers.roster_controller import RosterController
@@ -32,7 +32,7 @@ def get_controller(db=Depends(get_db)) -> RosterController:
 @router.post(
     "/assign",
     response_model=ApiResponse[RosterResponse],
-    dependencies=[Depends(get_current_admin)]
+    dependencies=[Depends(require_permission("rosters.manage"))]
 )
 def assign_player(
     request: RosterAssignRequest,
@@ -50,7 +50,7 @@ def assign_player(
         data=result
     )
 
-@router.delete("/remove", response_model=ApiResponse[bool], dependencies=[Depends(get_current_admin)])
+@router.delete("/remove", response_model=ApiResponse[bool], dependencies=[Depends(require_permission("rosters.manage"))])
 def remove_player(
     request: RemovePlayerRequest,
     controller=Depends(get_controller)

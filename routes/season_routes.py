@@ -3,7 +3,7 @@ from typing import List
 
 from core.database import get_db
 from core.response import ApiResponse
-from routes.auth_routes import get_current_admin
+from routes.auth_routes import require_permission
 from controllers.season_controller import SeasonController
 from schemas.schedule_schema import SeasonScheduleResponse
 from schemas.season_schema import (
@@ -18,7 +18,7 @@ from schemas.season_schema import (
 router = APIRouter(prefix="/seasons", tags=["Seasons"])
 
 
-@router.post("/", response_model=ApiResponse[SeasonResponse], dependencies=[Depends(get_current_admin)])
+@router.post("/", response_model=ApiResponse[SeasonResponse], dependencies=[Depends(require_permission("seasons.create"))])
 def create_season(
     request: SeasonCreateRequest,
     db=Depends(get_db)
@@ -62,7 +62,7 @@ def get_all_seasons(
     )
 
 
-@router.put("/{season_id}", response_model=ApiResponse[SeasonResponse], dependencies=[Depends(get_current_admin)])
+@router.put("/{season_id}", response_model=ApiResponse[SeasonResponse], dependencies=[Depends(require_permission("seasons.update"))])
 def update_season(
     season_id: int,
     request: SeasonUpdateRequest,
@@ -78,7 +78,7 @@ def update_season(
     )
 
 
-@router.delete("/{season_id}", response_model=ApiResponse[bool], dependencies=[Depends(get_current_admin)])
+@router.delete("/{season_id}", response_model=ApiResponse[bool], dependencies=[Depends(require_permission("seasons.delete"))])
 def delete_season(
     season_id: int,
     db=Depends(get_db)
@@ -105,7 +105,7 @@ def get_season_teams(season_id: int, db=Depends(get_db)):
 @router.post(
     "/{season_id}/teams",
     response_model=ApiResponse[List[SeasonTeamResponse]],
-    dependencies=[Depends(get_current_admin)]
+    dependencies=[Depends(require_permission("seasons.teams"))]
 )
 def add_season_team(season_id: int, request: SeasonTeamAddRequest, db=Depends(get_db)):
     return ApiResponse(
@@ -118,7 +118,7 @@ def add_season_team(season_id: int, request: SeasonTeamAddRequest, db=Depends(ge
 @router.delete(
     "/{season_id}/teams/{team_id}",
     response_model=ApiResponse[bool],
-    dependencies=[Depends(get_current_admin)]
+    dependencies=[Depends(require_permission("seasons.teams"))]
 )
 def remove_season_team(season_id: int, team_id: int, db=Depends(get_db)):
     return ApiResponse(

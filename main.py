@@ -1,9 +1,13 @@
+import logging
+
+import pyodbc
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.admin_seed import ensure_seed_admin
 from core.database import Database
+from repositories.permission_repository import PermissionRepository
 from core.config import settings
 from core.exceptions import add_exception_handlers
 from routes.system_routes import router as system_router
@@ -22,6 +26,13 @@ async def lifespan(app: FastAPI):
     Database.initialize()
     connection = Database.get_connection()
     try:
+        try:
+            PermissionRepository(connection).sync_catalog()
+        except pyodbc.Error:
+            connection.rollback()
+            logging.getLogger(__name__).exception(
+                "Permission catalog sync failed. Apply the database schema that adds tblPermissions."
+            )
         ensure_seed_admin(connection)
     finally:
         connection.close()

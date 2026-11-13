@@ -1,4 +1,10 @@
+import logging
+
+import pyodbc
+
+from core.permissions import ALL_CODES, MANAGE_PERMISSIONS
 from core.security import PASSWORD_ITERATIONS, hash_password, verify_password
+from repositories.permission_repository import PermissionRepository
 
 
 SEED_USERNAME = "admin"
@@ -54,6 +60,7 @@ def ensure_seed_admin(db, *, reset_password: bool = False) -> str:
             (SEED_USERNAME, password_hash, password_salt, PASSWORD_ITERATIONS),
         )
         db.commit()
+        _grant_all_without_manager(db, cursor.lastrowid)
         return "created"
 
     cursor.execute(
@@ -71,4 +78,19 @@ def ensure_seed_admin(db, *, reset_password: bool = False) -> str:
         (password_hash, password_salt, PASSWORD_ITERATIONS, row["Id"]),
     )
     db.commit()
+    _grant_all_without_manager(db, row["Id"])
     return "restored"
+
+
+def _grant_all_without_manager(db, admin_id) -> None:
+    """Give a created or restored seed admin every permission when nobody active can manage permissions."""
+    if admin_id is None:
+        return
+    repository = PermissionRepository(db)
+    try:
+        if repository.active_holder_ids(MANAGE_PERMISSIONS):
+            return
+        repository.change(int(admin_id), set(ALL_CODES), set(), None)
+    except pyodbc.Error:
+        db.rollback()
+        logging.getLogger(__name__).exception("Could not grant permissions to the seed admin.")

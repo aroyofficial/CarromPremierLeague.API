@@ -32,11 +32,13 @@ DESCRIPTIONS = {
     ("GET", "/health"): "HTML page showing the API service is live",
     ("POST", "/auth/login"): "Authenticate an admin and receive a bearer token",
     ("POST", "/auth/bootstrap"): "Create the first admin; only available on an empty admin table",
-    ("GET", "/auth/me"): "Get the authenticated admin",
-    ("GET", "/admins"): "List admin users",
-    ("GET", "/admins/{admin_id}"): "Get an admin user",
-    ("POST", "/admins"): "Create an admin user",
-    ("PATCH", "/admins/{admin_id}"): "Update an admin user",
+    ("GET", "/auth/me"): "Get the authenticated admin and their permissions",
+    ("GET", "/permissions"): "List every permission an admin user can hold",
+    ("GET", "/admins"): "List admin users and their permissions",
+    ("GET", "/admins/{admin_id}"): "Get an admin user and their permissions",
+    ("POST", "/admins"): "Create an admin user, optionally with initial permissions",
+    ("PATCH", "/admins/{admin_id}"): "Update an admin user; anyone may change their own username and password",
+    ("PUT", "/admins/{admin_id}/permissions"): "Replace an admin user's permissions within the caller's own permissions",
     ("DELETE", "/admins/{admin_id}"): "Delete an admin user",
     ("GET", "/docs"): "Interactive API documentation",
     ("GET", "/redoc"): "ReDoc API documentation",
@@ -178,10 +180,9 @@ def _collect(app) -> list[dict]:
         dependant = getattr(route, "dependant", None)
         query = [_query_info(field) for field in dependant.query_params] if dependant else []
         has_body = bool(dependant.body_params) if dependant else False
-        protected = bool(dependant and any(
-            getattr(dependency.call, "__name__", "") == "get_current_admin"
-            for dependency in dependant.dependencies
-        ))
+        calls = [dependency.call for dependency in dependant.dependencies] if dependant else []
+        permissions = [code for call in calls for code in getattr(call, "permission_codes", ())]
+        protected = bool(permissions) or any(getattr(call, "__name__", "") == "get_current_admin" for call in calls)
         for method in methods:
             rows.append({
                 "group": _group_name(route),
@@ -190,6 +191,7 @@ def _collect(app) -> list[dict]:
                 "query": query,
                 "body": has_body,
                 "protected": protected,
+                "permissions": permissions,
                 "description": _description(method, route.path, route.name),
             })
     rows.sort(key=lambda row: (
@@ -215,7 +217,9 @@ def _render_groups(rows: list[dict]) -> str:
             if item["query"]:
                 query = f'<span class="query">?{"&".join(_query_token(part) for part in item["query"])}</span>'
             notes = [_query_note(part) for part in item["query"]]
-            if item["protected"]:
+            if item["permissions"]:
+                notes.append("Permission: " + " or ".join(item["permissions"]))
+            elif item["protected"]:
                 notes.append("Bearer token required")
             if item["body"]:
                 notes.append("JSON body")

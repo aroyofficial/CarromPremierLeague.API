@@ -2,13 +2,25 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from core.database import get_db
+from core.permissions import (
+    CATALOG,
+    CREATE_ADMINS,
+    DELETE_ADMINS,
+    MANAGE_PERMISSIONS,
+    VIEW_ADMINS,
+    denied_message,
+    ensure_known,
+)
 from core.response import ApiResponse
 from repositories.admin_repository import AdminRepository
+from repositories.permission_repository import PermissionRepository
 from schemas.auth_schema import (
     AdminCreateRequest,
+    AdminPermissionsUpdate,
     AdminResponse,
     AdminUpdateRequest,
     LoginRequest,
+    PermissionResponse,
     TokenResponse,
 )
 from services.auth_service import AuthService
@@ -19,7 +31,7 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def get_service(db=Depends(get_db)) -> AuthService:
-    return AuthService(AdminRepository(db))
+    return AuthService(AdminRepository(db), PermissionRepository(db))
 
 
 def get_current_admin(
@@ -33,6 +45,22 @@ def get_current_admin(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return service.current_admin(credentials.credentials)
+
+
+def require_permission(*codes: str):
+    """Dependency that passes when the signed-in admin holds at least one of the codes."""
+    if not codes:
+        raise ValueError("require_permission needs at least one permission code.")
+    ensure_known(*codes)
+
+    def dependency(admin: AdminResponse = Depends(get_current_admin)) -> AdminResponse:
+        if not any(code in admin.permissions for code in codes):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=denied_message(codes))
+        return admin
+
+    dependency.permission_codes = codes
+    dependency.__name__ = "require_" + "_or_".join(code.replace(".", "_") for code in codes)
+    return dependency
 
 
 @router.post("/auth/login", response_model=ApiResponse[TokenResponse], summary="Admin login")
@@ -63,9 +91,26 @@ def current_admin(admin: AdminResponse = Depends(get_current_admin)):
     return ApiResponse(success=True, message="Current admin fetched successfully.", data=admin)
 
 
+@router.get("/permissions", response_model=ApiResponse[list[PermissionResponse]], summary="Permission catalog")
+def list_permissions(_: AdminResponse = Depends(get_current_admin)):
+    return ApiResponse(
+        success=True,
+        message="Permissions fetched successfully.",
+        data=[
+            PermissionResponse(
+                code=permission.code,
+                area=permission.area,
+                name=permission.name,
+                description=permission.description,
+            )
+            for permission in CATALOG
+        ],
+    )
+
+
 @router.get("/admins", response_model=ApiResponse[list[AdminResponse]], summary="List admins")
 def list_admins(
-    _: AdminResponse = Depends(get_current_admin),
+    _: AdminResponse = Depends(require_permission(VIEW_ADMINS, MANAGE_PERMISSIONS)),
     service: AuthService = Depends(get_service),
 ):
     return ApiResponse(success=True, message="Admins fetched successfully.", data=service.list_admins())
@@ -74,7 +119,7 @@ def list_admins(
 @router.get("/admins/{admin_id}", response_model=ApiResponse[AdminResponse], summary="Get admin")
 def get_admin(
     admin_id: int,
-    _: AdminResponse = Depends(get_current_admin),
+    _: AdminResponse = Depends(require_permission(VIEW_ADMINS, MANAGE_PERMISSIONS)),
     service: AuthService = Depends(get_service),
 ):
     return ApiResponse(success=True, message="Admin fetched successfully.", data=service.get_admin(admin_id))
@@ -88,10 +133,14 @@ def get_admin(
 )
 def create_admin(
     request: AdminCreateRequest,
-    _: AdminResponse = Depends(get_current_admin),
+    current: AdminResponse = Depends(require_permission(CREATE_ADMINS)),
     service: AuthService = Depends(get_service),
 ):
-    return ApiResponse(success=True, message="Admin created successfully.", data=service.create_admin(request))
+    return ApiResponse(
+        success=True,
+        message="Admin created successfully.",
+        data=service.create_admin(request, current),
+    )
 
 
 @router.patch("/admins/{admin_id}", response_model=ApiResponse[AdminResponse], summary="Update admin")
@@ -108,10 +157,28 @@ def update_admin(
     )
 
 
+@router.put(
+    "/admins/{admin_id}/permissions",
+    response_model=ApiResponse[AdminResponse],
+    summary="Set admin permissions",
+)
+def set_admin_permissions(
+    admin_id: int,
+    request: AdminPermissionsUpdate,
+    current: AdminResponse = Depends(require_permission(MANAGE_PERMISSIONS)),
+    service: AuthService = Depends(get_service),
+):
+    return ApiResponse(
+        success=True,
+        message="Permissions saved successfully.",
+        data=service.set_permissions(admin_id, request, current),
+    )
+
+
 @router.delete("/admins/{admin_id}", response_model=ApiResponse[bool], summary="Delete admin")
 def delete_admin(
     admin_id: int,
-    current: AdminResponse = Depends(get_current_admin),
+    current: AdminResponse = Depends(require_permission(DELETE_ADMINS)),
     service: AuthService = Depends(get_service),
 ):
     return ApiResponse(

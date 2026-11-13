@@ -4,7 +4,7 @@ from controllers.settings_controller import SettingsController
 from core.database import get_db
 from core.response import ApiResponse
 from repositories.settings_repository import SettingsRepository
-from routes.auth_routes import get_current_admin
+from routes.auth_routes import require_permission
 from schemas.settings_schema import CompetitionSettings
 from services.settings_service import SettingsService
 
@@ -24,7 +24,7 @@ def get_settings(controller: SettingsController = Depends(get_controller)):
     )
 
 
-@router.put("", response_model=ApiResponse[CompetitionSettings], dependencies=[Depends(get_current_admin)])
+@router.put("", response_model=ApiResponse[CompetitionSettings], dependencies=[Depends(require_permission("settings.update"))])
 def update_settings(
     request: CompetitionSettings,
     controller: SettingsController = Depends(get_controller),

@@ -11,7 +11,7 @@ from repositories.team_repository import TeamRepository
 from controllers.team_controller import TeamController
 from core.database import get_db
 from core.response import ApiResponse
-from routes.auth_routes import get_current_admin
+from routes.auth_routes import require_permission
 
 
 router = APIRouter(
@@ -51,7 +51,7 @@ def get_by_id(
     )
 
 
-@router.post("/", response_model=ApiResponse[TeamResponse], dependencies=[Depends(get_current_admin)])
+@router.post("/", response_model=ApiResponse[TeamResponse], dependencies=[Depends(require_permission("teams.create"))])
 def create(
     request: TeamCreateRequest,
     controller: TeamController = Depends(get_controller)
@@ -65,7 +65,7 @@ def create(
     )
 
 
-@router.patch("/{team_id}", response_model=ApiResponse[TeamResponse], dependencies=[Depends(get_current_admin)])
+@router.patch("/{team_id}", response_model=ApiResponse[TeamResponse], dependencies=[Depends(require_permission("teams.update"))])
 def update(
     team_id: int,
     request: TeamUpdateRequest,
@@ -80,7 +80,7 @@ def update(
     )
 
 
-@router.delete("/{team_id}", response_model=ApiResponse[bool], dependencies=[Depends(get_current_admin)])
+@router.delete("/{team_id}", response_model=ApiResponse[bool], dependencies=[Depends(require_permission("teams.delete"))])
 def delete(
     team_id: int,
     controller: TeamController = Depends(get_controller)

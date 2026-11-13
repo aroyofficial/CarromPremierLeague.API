@@ -5,7 +5,7 @@ from core.response import ApiResponse
 from repositories.match_repository import MatchRepository
 from services.match_service import MatchService
 from controllers.match_controller import MatchController
-from routes.auth_routes import get_current_admin
+from routes.auth_routes import require_permission
 from schemas.match_schema import (
     MatchCreateRequest,
     MatchUpdateRequest,
@@ -28,7 +28,7 @@ def get_controller(db=Depends(get_db)) -> MatchController:
     return MatchController(service)
 
 
-@router.post("", response_model=ApiResponse[MatchResponse], dependencies=[Depends(get_current_admin)])
+@router.post("", response_model=ApiResponse[MatchResponse], dependencies=[Depends(require_permission("matches.create"))])
 def create(request: MatchCreateRequest, controller: MatchController = Depends(get_controller)):
     return ApiResponse(
         success=True,
@@ -67,7 +67,7 @@ def get_by_id(match_id: int, controller: MatchController = Depends(get_controlle
    )
 
 
-@router.patch("/{match_id}", response_model=ApiResponse[MatchResponse], dependencies=[Depends(get_current_admin)])
+@router.patch("/{match_id}", response_model=ApiResponse[MatchResponse], dependencies=[Depends(require_permission("matches.update"))])
 def update(match_id: int, request: MatchUpdateRequest, controller: MatchController = Depends(get_controller)):
     return ApiResponse(
         success=True,
@@ -76,7 +76,7 @@ def update(match_id: int, request: MatchUpdateRequest, controller: MatchControll
     )
 
 
-@router.post("/{match_id}/reset", response_model=ApiResponse[MatchResponse], dependencies=[Depends(get_current_admin)])
+@router.post("/{match_id}/reset", response_model=ApiResponse[MatchResponse], dependencies=[Depends(require_permission("matches.reset"))])
 def reset(match_id: int, controller: MatchController = Depends(get_controller)):
     return ApiResponse(
         success=True,
@@ -94,7 +94,7 @@ def get_stats(match_id: int, controller: MatchController = Depends(get_controlle
     )
 
 
-@router.put("/{match_id}/stats", response_model=ApiResponse[List[MatchStatResponse]], dependencies=[Depends(get_current_admin)])
+@router.put("/{match_id}/stats", response_model=ApiResponse[List[MatchStatResponse]], dependencies=[Depends(require_permission("matches.scorecard"))])
 def upsert_stats(match_id: int, request: MatchStatsUpsertRequest, controller: MatchController = Depends(get_controller)):
     return ApiResponse(
         success=True,
@@ -103,7 +103,7 @@ def upsert_stats(match_id: int, request: MatchStatsUpsertRequest, controller: Ma
     )
 
 
-@router.delete("/{match_id}", response_model=ApiResponse[bool], dependencies=[Depends(get_current_admin)])
+@router.delete("/{match_id}", response_model=ApiResponse[bool], dependencies=[Depends(require_permission("matches.delete"))])
 def delete(match_id: int, controller: MatchController = Depends(get_controller)):
     return ApiResponse(
         success=True,

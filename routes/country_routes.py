@@ -11,7 +11,7 @@ from schemas.country_schema import (
 )
 from core.database import get_db
 from core.response import ApiResponse
-from routes.auth_routes import get_current_admin
+from routes.auth_routes import require_permission
 
 
 router = APIRouter(
@@ -51,7 +51,7 @@ def get_by_id(
     )
 
 
-@router.post("/", response_model=ApiResponse[CountryResponse], dependencies=[Depends(get_current_admin)])
+@router.post("/", response_model=ApiResponse[CountryResponse], dependencies=[Depends(require_permission("countries.create"))])
 def create(
     request: CountryCreateRequest,
     controller: CountryController = Depends(get_controller)
@@ -65,7 +65,7 @@ def create(
     )
 
 
-@router.patch("/{country_id}", response_model=ApiResponse[CountryResponse], dependencies=[Depends(get_current_admin)])
+@router.patch("/{country_id}", response_model=ApiResponse[CountryResponse], dependencies=[Depends(require_permission("countries.update"))])
 def update(
     country_id: int,
     request: CountryUpdateRequest,
@@ -80,7 +80,7 @@ def update(
     )
 
 
-@router.delete("/{country_id}", response_model=ApiResponse[bool], dependencies=[Depends(get_current_admin)])
+@router.delete("/{country_id}", response_model=ApiResponse[bool], dependencies=[Depends(require_permission("countries.delete"))])
 def delete(
     country_id: int,
     controller: CountryController = Depends(get_controller)
