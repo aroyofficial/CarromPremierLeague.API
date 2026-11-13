@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from enums.match_status import MatchStatus
 from enums.match_category import MatchCategory
 from enums.match_outcome import MatchOutcome
+from repositories.settings_repository import SettingsRepository
 from services.match_rules import validate_lifecycle_update
 
 # One team plays the white coins and the other plays the black coins.
@@ -50,10 +51,13 @@ class MatchService:
         match = self.get_by_id(match_id)
         update_data = request.model_dump(exclude_unset=True)
         completing = update_data.get("status", match.status) == MatchStatus.Played.value
+        clock = SettingsRepository(self.repository.db).get()
         validate_lifecycle_update(
             match,
             update_data,
             colour_cleared=self._colour_cleared(match_id) if completing else False,
+            regulation_seconds=clock.regulation_minutes * 60,
+            extra_seconds=clock.extra_minutes * 60,
         )
         match = self.repository.update(match_id, request)
         if not match:

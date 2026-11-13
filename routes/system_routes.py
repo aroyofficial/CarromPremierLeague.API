@@ -67,6 +67,8 @@ DESCRIPTIONS = {
     ("DELETE", "/seasons/{season_id}/teams/{team_id}"): "Remove a team from a season",
     ("GET", "/seasons/{season_id}/schedule"): "Get the match schedule for a season",
     ("GET", "/seasons/{season_id}/league-table"): "Get the league table for a season",
+    ("GET", "/settings"): "Get competition settings",
+    ("PUT", "/settings"): "Update competition settings",
     ("GET", "/matches"): "List matches",
     ("GET", "/matches/next-order"): "Get the next match order for a season",
     ("GET", "/matches/{match_id}"): "Get a match by id",

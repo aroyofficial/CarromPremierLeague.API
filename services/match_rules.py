@@ -21,7 +21,13 @@ def is_knockout(category: int) -> bool:
     return category in KNOCKOUT_CATEGORIES
 
 
-def validate_lifecycle_update(match, update_data: dict, colour_cleared: bool = False) -> None:
+def validate_lifecycle_update(
+    match,
+    update_data: dict,
+    colour_cleared: bool = False,
+    regulation_seconds: int = REGULATION_SECONDS,
+    extra_seconds: int = EXTRA_SECONDS,
+) -> None:
     """Reject match state changes that do not follow the competition rules."""
     requested_status = update_data.get("status", match.status)
     current_status = match.status
@@ -35,7 +41,7 @@ def validate_lifecycle_update(match, update_data: dict, colour_cleared: bool = F
             "duration": update_data.get("duration", match.duration),
             "extra": update_data.get("extra", match.extra),
             "golden_strike": update_data.get("golden_strike", match.golden_strike),
-        }, colour_cleared=colour_cleared)
+        }, colour_cleared=colour_cleared, regulation_seconds=regulation_seconds, extra_seconds=extra_seconds)
         return
 
     if current_status == MatchStatus.Scheduled.value:
@@ -54,7 +60,7 @@ def validate_lifecycle_update(match, update_data: dict, colour_cleared: bool = F
             raise HTTPException(status_code=400, detail="Both teams must be assigned before starting a match.")
 
     if requested_status != MatchStatus.Played.value:
-        _validate_in_progress_update(match, update_data)
+        _validate_in_progress_update(match, update_data, extra_seconds=extra_seconds)
         return
 
     if current_status != MatchStatus.InProgress.value:
@@ -63,27 +69,33 @@ def validate_lifecycle_update(match, update_data: dict, colour_cleared: bool = F
             detail="A match must be started before it can be completed.",
         )
 
-    _validate_completion(match, update_data, colour_cleared=colour_cleared)
+    _validate_completion(
+        match,
+        update_data,
+        colour_cleared=colour_cleared,
+        regulation_seconds=regulation_seconds,
+        extra_seconds=extra_seconds,
+    )
 
 
-def _regulation_satisfied(match, duration, colour_cleared: bool) -> bool:
-    if duration == REGULATION_SECONDS:
+def _regulation_satisfied(match, duration, colour_cleared: bool, regulation_seconds: int) -> bool:
+    if duration == regulation_seconds:
         return True
     # A finished match keeps the duration it was saved with, including an early finish.
     if match.status == MatchStatus.Played.value and duration is not None and duration == match.duration:
         return True
-    return bool(colour_cleared) and isinstance(duration, int) and 0 <= duration <= REGULATION_SECONDS
+    return bool(colour_cleared) and isinstance(duration, int) and 0 <= duration <= regulation_seconds
 
 
-def _extra_satisfied(match, extra, colour_cleared: bool) -> bool:
-    if extra in (None, 0, EXTRA_SECONDS):
+def _extra_satisfied(match, extra, colour_cleared: bool, extra_seconds: int) -> bool:
+    if extra in (None, 0, extra_seconds):
         return True
     if match.status == MatchStatus.Played.value and extra is not None and extra == match.extra:
         return True
-    return bool(colour_cleared) and isinstance(extra, int) and 0 <= extra <= EXTRA_SECONDS
+    return bool(colour_cleared) and isinstance(extra, int) and 0 <= extra <= extra_seconds
 
 
-def _validate_in_progress_update(match, update_data: dict) -> None:
+def _validate_in_progress_update(match, update_data: dict, extra_seconds: int = EXTRA_SECONDS) -> None:
     premature_result_fields = {"duration", "golden_strike", "outcome", "net_points"} & update_data.keys()
     if premature_result_fields:
         raise HTTPException(
@@ -98,10 +110,19 @@ def _validate_in_progress_update(match, update_data: dict) -> None:
     if not is_knockout(match.category):
         raise HTTPException(status_code=400, detail="League matches do not have extra time.")
     if extra not in (0, None):
-        raise HTTPException(status_code=400, detail="Extra time starts at 00:00 and is limited to five minutes.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Extra time starts at 00:00 and is limited to {extra_seconds // 60} minutes.",
+        )
 
 
-def _validate_completion(match, update_data: dict, colour_cleared: bool = False) -> None:
+def _validate_completion(
+    match,
+    update_data: dict,
+    colour_cleared: bool = False,
+    regulation_seconds: int = REGULATION_SECONDS,
+    extra_seconds: int = EXTRA_SECONDS,
+) -> None:
     outcome = update_data.get("outcome")
     duration = update_data.get("duration")
     extra = update_data.get("extra")
@@ -114,30 +135,33 @@ def _validate_completion(match, update_data: dict, colour_cleared: bool = False)
             raise HTTPException(status_code=400, detail="Golden Strike does not use regulation or extra time.")
         return
 
-    if not _regulation_satisfied(match, duration, colour_cleared):
+    if not _regulation_satisfied(match, duration, colour_cleared, regulation_seconds):
         raise HTTPException(
             status_code=400,
-            detail="A match can be completed only after the full 15-minute regulation period.",
+            detail=f"A match can be completed only after the full {regulation_seconds // 60}-minute regulation period.",
         )
 
     if match.category == MatchCategory.League.value:
         if extra not in (None, 0) or golden_strike:
-            raise HTTPException(status_code=400, detail="League matches have only 15 minutes of regulation time.")
+            raise HTTPException(
+                status_code=400,
+                detail=f"League matches have only {regulation_seconds // 60} minutes of regulation time.",
+            )
         return
 
     if not is_knockout(match.category):
         return
 
-    if not _extra_satisfied(match, extra, colour_cleared):
+    if not _extra_satisfied(match, extra, colour_cleared, extra_seconds):
         raise HTTPException(
             status_code=400,
-            detail="Extra time is either skipped or played for the full five minutes.",
+            detail=f"Extra time is either skipped or played for the full {extra_seconds // 60} minutes.",
         )
     if golden_strike and (
-        extra != EXTRA_SECONDS
+        extra != extra_seconds
         or outcome not in (MatchOutcome.Team1Win.value, MatchOutcome.Team2Win.value)
     ):
         raise HTTPException(
             status_code=400,
-            detail="Golden Strike is available after the full five minutes of extra time and must have a winner.",
+            detail=f"Golden Strike is available after the full {extra_seconds // 60} minutes of extra time and must have a winner.",
         )
