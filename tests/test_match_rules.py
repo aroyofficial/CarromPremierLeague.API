@@ -80,6 +80,54 @@ class MatchLifecycleRuleTests(unittest.TestCase):
         match.golden_strike = False
         validate_lifecycle_update(match, {"outcome": MatchOutcome.Team1Win.value, "net_points": 2})
 
+    def test_league_match_can_finish_early_once_a_team_reaches_nine(self):
+        validate_lifecycle_update(
+            live_match(MatchCategory.League),
+            {
+                "status": MatchStatus.Played.value,
+                "duration": 8 * 60,
+                "outcome": MatchOutcome.Team1Win.value,
+                "net_points": 9,
+                "extra": None,
+            },
+            colour_cleared=True,
+        )
+
+    def test_league_match_still_requires_full_time_below_nine(self):
+        with self.assertRaises(HTTPException) as raised:
+            validate_lifecycle_update(
+                live_match(MatchCategory.League),
+                {
+                    "status": MatchStatus.Played.value,
+                    "duration": 8 * 60,
+                    "outcome": MatchOutcome.Team1Win.value,
+                    "extra": None,
+                },
+            )
+        self.assertIn("15-minute", raised.exception.detail)
+
+    def test_knockout_can_finish_during_extra_time_once_a_team_reaches_nine(self):
+        validate_lifecycle_update(
+            live_match(MatchCategory.Final),
+            {
+                "status": MatchStatus.Played.value,
+                "duration": REGULATION_SECONDS,
+                "extra": 2 * 60,
+                "outcome": MatchOutcome.Team2Win.value,
+                "net_points": 3,
+            },
+            colour_cleared=True,
+        )
+
+    def test_finished_early_match_can_keep_its_short_duration(self):
+        match = live_match(MatchCategory.League)
+        match.status = MatchStatus.Played.value
+        match.outcome = MatchOutcome.Team1Win.value
+        match.duration = 8 * 60
+        match.extra = None
+        match.golden_strike = False
+        validate_lifecycle_update(match, {"net_points": 9})
+
     def test_golden_strike_requires_a_winner_and_no_clock(self):
         validate_lifecycle_update(
             live_match(MatchCategory.GoldenStrike),

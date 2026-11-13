@@ -48,7 +48,13 @@ class MatchService:
 
     def update(self, match_id: int, request: MatchUpdateRequest) -> MatchResponse:
         match = self.get_by_id(match_id)
-        validate_lifecycle_update(match, request.model_dump(exclude_unset=True))
+        update_data = request.model_dump(exclude_unset=True)
+        completing = update_data.get("status", match.status) == MatchStatus.Played.value
+        validate_lifecycle_update(
+            match,
+            update_data,
+            colour_cleared=self._colour_cleared(match_id) if completing else False,
+        )
         match = self.repository.update(match_id, request)
         if not match:
             raise HTTPException(status_code=404, detail="Match not found")
@@ -89,6 +95,22 @@ class MatchService:
             item.coins_fined = derived_fines
         self._validate_coin_counts(match_id, request.stats)
         return self.repository.upsert_stats(match_id, request.stats)
+
+    def _colour_cleared(self, match_id: int) -> bool:
+        own = {}
+        taken = {}
+        fines = {}
+        for row in self.repository.player_coin_lines(match_id):
+            team_id = int(row["TeamId"])
+            own[team_id] = own.get(team_id, 0) + int(row["CoinsPocketed"] or 0)
+            taken[team_id] = taken.get(team_id, 0) + int(row["OpponentCoinsPocketed"] or 0)
+            fines[team_id] = fines.get(team_id, 0) + int(row["SingleFines"] or 0) + 2 * int(row["DoubleFines"] or 0)
+        for team_id in own.keys() | taken.keys():
+            other_taken = sum(count for other_id, count in taken.items() if other_id != team_id)
+            off_board = max(0, own.get(team_id, 0) - fines.get(team_id, 0)) + other_taken
+            if off_board >= COINS_PER_COLOR:
+                return True
+        return False
 
     def _validate_coin_counts(self, match_id: int, stats: list) -> None:
         roster = {

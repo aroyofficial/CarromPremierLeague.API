@@ -21,7 +21,7 @@ def is_knockout(category: int) -> bool:
     return category in KNOCKOUT_CATEGORIES
 
 
-def validate_lifecycle_update(match, update_data: dict) -> None:
+def validate_lifecycle_update(match, update_data: dict, colour_cleared: bool = False) -> None:
     """Reject match state changes that do not follow the competition rules."""
     requested_status = update_data.get("status", match.status)
     current_status = match.status
@@ -35,7 +35,7 @@ def validate_lifecycle_update(match, update_data: dict) -> None:
             "duration": update_data.get("duration", match.duration),
             "extra": update_data.get("extra", match.extra),
             "golden_strike": update_data.get("golden_strike", match.golden_strike),
-        })
+        }, colour_cleared=colour_cleared)
         return
 
     if current_status == MatchStatus.Scheduled.value:
@@ -63,7 +63,24 @@ def validate_lifecycle_update(match, update_data: dict) -> None:
             detail="A match must be started before it can be completed.",
         )
 
-    _validate_completion(match, update_data)
+    _validate_completion(match, update_data, colour_cleared=colour_cleared)
+
+
+def _regulation_satisfied(match, duration, colour_cleared: bool) -> bool:
+    if duration == REGULATION_SECONDS:
+        return True
+    # A finished match keeps the duration it was saved with, including an early finish.
+    if match.status == MatchStatus.Played.value and duration is not None and duration == match.duration:
+        return True
+    return bool(colour_cleared) and isinstance(duration, int) and 0 <= duration <= REGULATION_SECONDS
+
+
+def _extra_satisfied(match, extra, colour_cleared: bool) -> bool:
+    if extra in (None, 0, EXTRA_SECONDS):
+        return True
+    if match.status == MatchStatus.Played.value and extra is not None and extra == match.extra:
+        return True
+    return bool(colour_cleared) and isinstance(extra, int) and 0 <= extra <= EXTRA_SECONDS
 
 
 def _validate_in_progress_update(match, update_data: dict) -> None:
@@ -84,7 +101,7 @@ def _validate_in_progress_update(match, update_data: dict) -> None:
         raise HTTPException(status_code=400, detail="Extra time starts at 00:00 and is limited to five minutes.")
 
 
-def _validate_completion(match, update_data: dict) -> None:
+def _validate_completion(match, update_data: dict, colour_cleared: bool = False) -> None:
     outcome = update_data.get("outcome")
     duration = update_data.get("duration")
     extra = update_data.get("extra")
@@ -97,7 +114,7 @@ def _validate_completion(match, update_data: dict) -> None:
             raise HTTPException(status_code=400, detail="Golden Strike does not use regulation or extra time.")
         return
 
-    if duration != REGULATION_SECONDS:
+    if not _regulation_satisfied(match, duration, colour_cleared):
         raise HTTPException(
             status_code=400,
             detail="A match can be completed only after the full 15-minute regulation period.",
@@ -111,7 +128,7 @@ def _validate_completion(match, update_data: dict) -> None:
     if not is_knockout(match.category):
         return
 
-    if extra not in (None, 0, EXTRA_SECONDS):
+    if not _extra_satisfied(match, extra, colour_cleared):
         raise HTTPException(
             status_code=400,
             detail="Extra time is either skipped or played for the full five minutes.",
