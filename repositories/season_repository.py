@@ -9,6 +9,19 @@ from schemas.season_schema import (
     LeagueTableStanding,
     SeasonTeamResponse,
 )
+
+
+def show_placeholder_table(start_date, today, played_match_count: int) -> bool:
+    """A season that has not reached its start date shows a blank table.
+
+    Completed matches still count. A future start date must not hide results
+    that have already been saved.
+    """
+    if start_date is None or start_date <= today:
+        return False
+    return int(played_match_count or 0) == 0
+
+
 class SeasonRepository:
 
     def __init__(self, db):
@@ -188,11 +201,20 @@ class SeasonRepository:
         cursor.execute(query, (name,))
         return cursor.fetchone() is not None
 
-    def _is_upcoming(self, season: Optional[SeasonResponse]) -> bool:
-        if not season or not season.start_date:
-            return False
-        today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
-        return season.start_date > today
+    def _played_match_count(self, season_id: int) -> int:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS PlayedCount
+            FROM tblMatches
+            WHERE SeasonId = %s
+              AND Status = 3
+              AND Void = 0
+            """,
+            (season_id,),
+        )
+        row = cursor.fetchone() or {}
+        return int(row.get("PlayedCount") or 0)
 
     def _upcoming_league_table(self, season_id: int) -> LeagueTableResponse:
         cursor = self.db.cursor(dictionary=True)
@@ -231,7 +253,12 @@ class SeasonRepository:
 
     def get_league_table(self, season_id: int) -> LeagueTableResponse:
         season = self.get_by_id(season_id)
-        if self._is_upcoming(season):
+        today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+        if show_placeholder_table(
+            season.start_date if season else None,
+            today,
+            self._played_match_count(season_id),
+        ):
             return self._upcoming_league_table(season_id)
 
         cursor = self.db.cursor(dictionary=True)
