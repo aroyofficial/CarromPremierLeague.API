@@ -11,6 +11,13 @@ from schemas.season_schema import (
 )
 
 
+def arrange_standings(standings: list[LeagueTableStanding]) -> list[LeagueTableStanding]:
+    """Keep every team. With no completed match, list them A to Z."""
+    if standings and all(row.matches_played == 0 for row in standings):
+        return sorted(standings, key=lambda row: row.team_name.casefold())
+    return standings
+
+
 def show_placeholder_table(start_date, today, played_match_count: int) -> bool:
     """A season that has not reached its start date shows a blank table.
 
@@ -227,7 +234,7 @@ class SeasonRepository:
                AND t.Void = 0
             WHERE st.SeasonId = %s
               AND st.Void = 0
-            ORDER BY t.Id
+            ORDER BY t.Name
             """,
             (season_id,),
         )
@@ -259,7 +266,9 @@ class SeasonRepository:
             today,
             self._played_match_count(season_id),
         ):
-            return self._upcoming_league_table(season_id)
+            table = self._upcoming_league_table(season_id)
+            table.standings = arrange_standings(table.standings)
+            return table
 
         cursor = self.db.cursor(dictionary=True)
         cursor.execute("EXEC dbo.usp_GetLeagueTable ?", (season_id,))
@@ -270,8 +279,6 @@ class SeasonRepository:
         )
 
         for row in cursor.fetchall():
-            if int(row.get("MatchesPlayed") or 0) == 0:
-                continue
             is_winner = bool(row.get("IsWinner", 0))
             result.standings.append(
                 LeagueTableStanding(
@@ -311,4 +318,5 @@ class SeasonRepository:
             result.standings = []
             result.winner_id = None
 
+        result.standings = arrange_standings(result.standings)
         return result
