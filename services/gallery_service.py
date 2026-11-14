@@ -41,11 +41,12 @@ _COLUMNS = {
 
 
 def gallery_link(url: str) -> str:
-    """A public image or video address. Gallery links are stored as given and are never downloaded."""
-    text = (url or "").strip()
-    if "#" in text:
-        raise HTTPException(status_code=400, detail="Enter the link without a # fragment.")
-    return normalize_picture_link(text)
+    """A public image or video address. Gallery links are stored as given and are never downloaded.
+
+    A chosen picture frame is kept on the address as #cplcrop=x,y,w,h. Those four numbers are
+    fractions of the picture, from the top left. The file at the link is not copied or cut.
+    """
+    return normalize_picture_link((url or "").strip())
 
 
 def media_kind(url: str) -> str:

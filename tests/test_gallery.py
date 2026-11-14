@@ -289,6 +289,10 @@ class GalleryRuleTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             gallery_link("https://user:pass@cdn.example/a.png")
         self.assertEqual(gallery_link("https://cdn.example/a.png"), "https://cdn.example/a.png")
+        self.assertEqual(
+            gallery_link("https://cdn.example/a.jpg#cplcrop=0.1,0.2,0.5,0.4"),
+            "https://cdn.example/a.jpg#cplcrop=0.1000,0.2000,0.5000,0.4000",
+        )
 
     def test_png_pixel_size_is_read_from_the_header(self):
         self.assertEqual(image_pixel_size(_png(640, 480)), (640, 480))
