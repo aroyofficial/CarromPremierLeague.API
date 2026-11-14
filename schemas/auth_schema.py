@@ -40,3 +40,39 @@ class PermissionResponse(BaseModel):
     area: str
     name: str
     description: str
+    area_code: str
+    parent: str | None = None
+
+
+class PermissionNode(BaseModel):
+    code: str
+    name: str
+    description: str
+    parent: str | None = None
+
+
+class PermissionAreaNode(BaseModel):
+    code: str
+    name: str
+    description: str
+    icon: str
+    permissions: list[PermissionNode]
+
+
+class PermissionSectionNode(BaseModel):
+    code: str
+    name: str
+    description: str
+    areas: list[PermissionAreaNode]
+
+
+class PermissionRoleResponse(BaseModel):
+    code: str
+    name: str
+    description: str
+    permissions: list[str]
+
+
+class PermissionTreeResponse(BaseModel):
+    sections: list[PermissionSectionNode]
+    roles: list[PermissionRoleResponse]

@@ -49,6 +49,8 @@ jobs:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
           CPL_AUTH_JWT_SECRET: ${{ secrets.CPL_AUTH_JWT_SECRET }}
+          CLOUDINARY_URL: ${{ secrets.CLOUDINARY_URL }}
+          CPL_MEDIA_FOLDER: ${{ vars.CPL_MEDIA_FOLDER || 'cpl' }}
         run: |
           set -euo pipefail
           set_env_var() {
@@ -70,6 +72,12 @@ jobs:
           }
           set_env_var "CPL_AUTH_JWT_SECRET" "${CPL_AUTH_JWT_SECRET}"
           set_env_var "CPL_AUTH_TOKEN_EXPIRE_MINUTES" "60"
+          set_env_var "CPL_MEDIA_FOLDER" "${CPL_MEDIA_FOLDER}"
+          if [ -n "${CLOUDINARY_URL}" ]; then
+            set_env_var "CPL_CLOUDINARY_URL" "${CLOUDINARY_URL}"
+          else
+            echo "::warning::Repository secret CLOUDINARY_URL is not set; picture uploads stay disabled on Render."
+          fi
 
       - name: Ask Render to deploy this commit
         env:

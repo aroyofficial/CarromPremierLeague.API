@@ -3,13 +3,18 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from core.database import get_db
 from core.permissions import (
+    AREA_NAMES,
+    AREAS,
     CATALOG,
     CREATE_ADMINS,
     DELETE_ADMINS,
     MANAGE_PERMISSIONS,
+    ROLES,
+    SECTIONS,
     VIEW_ADMINS,
     denied_message,
     ensure_known,
+    ordered,
 )
 from core.response import ApiResponse
 from repositories.admin_repository import AdminRepository
@@ -20,7 +25,12 @@ from schemas.auth_schema import (
     AdminResponse,
     AdminUpdateRequest,
     LoginRequest,
+    PermissionAreaNode,
+    PermissionNode,
     PermissionResponse,
+    PermissionRoleResponse,
+    PermissionSectionNode,
+    PermissionTreeResponse,
     TokenResponse,
 )
 from services.auth_service import AuthService
@@ -99,13 +109,65 @@ def list_permissions(_: AdminResponse = Depends(get_current_admin)):
         data=[
             PermissionResponse(
                 code=permission.code,
-                area=permission.area,
+                area=AREA_NAMES[permission.area],
                 name=permission.name,
                 description=permission.description,
+                area_code=permission.area,
+                parent=permission.parent,
             )
             for permission in CATALOG
         ],
     )
+
+
+def build_permission_tree() -> PermissionTreeResponse:
+    def area_node(area) -> PermissionAreaNode:
+        return PermissionAreaNode(
+            code=area.code,
+            name=area.name,
+            description=area.description,
+            icon=area.icon,
+            permissions=[
+                PermissionNode(
+                    code=permission.code,
+                    name=permission.name,
+                    description=permission.description,
+                    parent=permission.parent,
+                )
+                for permission in CATALOG
+                if permission.area == area.code
+            ],
+        )
+
+    return PermissionTreeResponse(
+        sections=[
+            PermissionSectionNode(
+                code=section.code,
+                name=section.name,
+                description=section.description,
+                areas=[area_node(area) for area in AREAS if area.section == section.code],
+            )
+            for section in SECTIONS
+        ],
+        roles=[
+            PermissionRoleResponse(
+                code=role.code,
+                name=role.name,
+                description=role.description,
+                permissions=ordered(role.permissions),
+            )
+            for role in ROLES
+        ],
+    )
+
+
+@router.get(
+    "/permissions/tree",
+    response_model=ApiResponse[PermissionTreeResponse],
+    summary="Permission hierarchy and roles",
+)
+def permission_tree(_: AdminResponse = Depends(get_current_admin)):
+    return ApiResponse(success=True, message="Permission hierarchy fetched successfully.", data=build_permission_tree())
 
 
 @router.get("/admins", response_model=ApiResponse[list[AdminResponse]], summary="List admins")

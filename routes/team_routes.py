@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends
-from typing import List
+from fastapi import APIRouter, Depends, File, UploadFile
+from typing import List, Optional
 
 from schemas.team_schema import (
     TeamCreateRequest,
@@ -11,7 +11,9 @@ from repositories.team_repository import TeamRepository
 from controllers.team_controller import TeamController
 from core.database import get_db
 from core.response import ApiResponse
+from core.storage import MediaStorage, get_storage
 from routes.auth_routes import require_permission
+from services.media_service import MediaService, read_image
 
 
 router = APIRouter(
@@ -24,6 +26,13 @@ def get_controller(db=Depends(get_db)) -> TeamController:
     repository = TeamRepository(db)
     service = TeamService(repository)
     return TeamController(service)
+
+
+def get_media_service(
+    db=Depends(get_db),
+    storage: Optional[MediaStorage] = Depends(get_storage),
+) -> MediaService:
+    return MediaService(storage, team_repository=TeamRepository(db))
 
 
 @router.get("/", response_model=ApiResponse[List[TeamResponse]])
@@ -76,6 +85,35 @@ def update(
     return ApiResponse(
         success=True,
         message="Team updated successfully",
+        data=result
+    )
+
+
+@router.put("/{team_id}/logo", response_model=ApiResponse[TeamResponse], dependencies=[Depends(require_permission("teams.update"))])
+def upload_logo(
+    team_id: int,
+    file: UploadFile = File(...),
+    media: MediaService = Depends(get_media_service)
+):
+    result = media.set_team_logo(team_id, read_image(file.file))
+
+    return ApiResponse(
+        success=True,
+        message="Team logo updated successfully",
+        data=result
+    )
+
+
+@router.delete("/{team_id}/logo", response_model=ApiResponse[TeamResponse], dependencies=[Depends(require_permission("teams.update"))])
+def remove_logo(
+    team_id: int,
+    media: MediaService = Depends(get_media_service)
+):
+    result = media.remove_team_logo(team_id)
+
+    return ApiResponse(
+        success=True,
+        message="Team logo removed successfully",
         data=result
     )
 

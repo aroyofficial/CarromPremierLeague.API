@@ -128,15 +128,14 @@ class PlayerRepository:
 
         query = """
             INSERT INTO tblPlayers
-            (FirstName, LastName, DateOfBirth, AvatarUrl, NationalityId)
-            VALUES (%s, %s, %s, %s, %s)
+            (FirstName, LastName, DateOfBirth, NationalityId)
+            VALUES (%s, %s, %s, %s)
         """
 
         cursor.execute(query, (
             request.first_name,
             request.last_name,
             request.date_of_birth,
-            str(request.avatar_url) if request.avatar_url else None,
             request.nationality_id
         ))
 
@@ -155,7 +154,6 @@ class PlayerRepository:
             "first_name": "FirstName",
             "last_name": "LastName",
             "date_of_birth": "DateOfBirth",
-            "avatar_url": "AvatarUrl",
             "nationality_id": "NationalityId"
         }
 
@@ -165,7 +163,7 @@ class PlayerRepository:
         for key, value in update_data.items():
             if key in field_mapping:
                 fields.append(f"{field_mapping[key]} = %s")
-                values.append(str(value) if key == "avatar_url" and value else value)
+                values.append(value)
 
         if not fields:
             return self.get_by_id(player_id)
@@ -183,6 +181,28 @@ class PlayerRepository:
         self.db.commit()
 
         return self.get_by_id(player_id)
+
+    def get_avatar_key(self, player_id: int) -> tuple[bool, Optional[str]]:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT AvatarStorageKey
+            FROM tblPlayers
+            WHERE Id = %s AND Void = 0
+        """, (player_id,))
+        row = cursor.fetchone()
+        if not row:
+            return False, None
+        return True, row["AvatarStorageKey"]
+
+    def set_avatar(self, player_id: int, url: Optional[str], key: Optional[str]) -> bool:
+        cursor = self.db.cursor()
+        cursor.execute("""
+            UPDATE tblPlayers
+            SET AvatarUrl = %s, AvatarStorageKey = %s, UpdatedAt = SYSUTCDATETIME()
+            WHERE Id = %s AND Void = 0
+        """, (url, key, player_id))
+        self.db.commit()
+        return cursor.rowcount > 0
 
     def delete(self, player_id: int) -> bool:
         cursor = self.db.cursor()

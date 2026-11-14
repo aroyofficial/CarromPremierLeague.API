@@ -173,18 +173,18 @@ class AdminPermissionRuleTests(unittest.TestCase):
 
     def test_cannot_change_permissions_you_do_not_hold(self):
         manager = self._make("manager", [MANAGE_PERMISSIONS, "teams.create"])
-        target = self._make("target", ["seasons.delete"])
+        target = self._make("target", ["seasons.create"])
         with self.assertRaises(HTTPException) as raised:
             self.service.set_permissions(target.id, AdminPermissionsUpdate(permissions=[]), manager)
         self.assertEqual(raised.exception.status_code, 403)
         with self.assertRaises(HTTPException):
             self.service.set_permissions(
-                target.id, AdminPermissionsUpdate(permissions=["seasons.delete", "players.create"]), manager
+                target.id, AdminPermissionsUpdate(permissions=["seasons.create", "players.create"]), manager
             )
         kept = self.service.set_permissions(
-            target.id, AdminPermissionsUpdate(permissions=["seasons.delete", "teams.create"]), manager
+            target.id, AdminPermissionsUpdate(permissions=["seasons.create", "teams.create"]), manager
         )
-        self.assertEqual(kept.permissions, ["seasons.delete", "teams.create"])
+        self.assertEqual(kept.permissions, ["seasons.create", "teams.create"])
 
     def test_cannot_remove_own_manage_permission(self):
         self._make("backup", [MANAGE_PERMISSIONS])

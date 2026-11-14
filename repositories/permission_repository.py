@@ -1,4 +1,4 @@
-from core.permissions import ALL_CODES, CATALOG, ordered
+from core.permissions import ALL_CODES, AREA_NAMES, AREAS, CATALOG, ROLES, SECTIONS, ordered
 
 
 class PermissionRepository:
@@ -7,32 +7,151 @@ class PermissionRepository:
 
     def sync_catalog(self) -> None:
         cursor = self.db.cursor()
+        for section in SECTIONS:
+            cursor.execute(
+                """
+                UPDATE tblPermissionSections
+                SET Name = %s, Description = %s, SortOrder = %s, UpdatedAt = SYSUTCDATETIME()
+                WHERE Code = %s AND (Name <> %s OR Description <> %s OR SortOrder <> %s)
+                """,
+                (
+                    section.name, section.description, section.sort_order,
+                    section.code,
+                    section.name, section.description, section.sort_order,
+                ),
+            )
+            cursor.execute(
+                """
+                IF NOT EXISTS (SELECT 1 FROM tblPermissionSections WHERE Code = %s)
+                    INSERT INTO tblPermissionSections (Code, Name, Description, SortOrder)
+                    VALUES (%s, %s, %s, %s)
+                """,
+                (section.code, section.code, section.name, section.description, section.sort_order),
+            )
+        for area in AREAS:
+            cursor.execute(
+                """
+                UPDATE tblPermissionAreas
+                SET SectionCode = %s, Name = %s, Description = %s, Icon = %s, SortOrder = %s,
+                    UpdatedAt = SYSUTCDATETIME()
+                WHERE Code = %s
+                  AND (SectionCode <> %s OR Name <> %s OR Description <> %s OR Icon <> %s OR SortOrder <> %s)
+                """,
+                (
+                    area.section, area.name, area.description, area.icon, area.sort_order,
+                    area.code,
+                    area.section, area.name, area.description, area.icon, area.sort_order,
+                ),
+            )
+            cursor.execute(
+                """
+                IF NOT EXISTS (SELECT 1 FROM tblPermissionAreas WHERE Code = %s)
+                    INSERT INTO tblPermissionAreas (Code, SectionCode, Name, Description, Icon, SortOrder)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (area.code, area.code, area.section, area.name, area.description, area.icon, area.sort_order),
+            )
         for permission in CATALOG:
+            area_name = AREA_NAMES[permission.area]
             cursor.execute(
                 """
                 UPDATE tblPermissions
-                SET Area = %s, Name = %s, Description = %s, SortOrder = %s, UpdatedAt = SYSUTCDATETIME()
+                SET Area = %s, AreaCode = %s, Name = %s, Description = %s, SortOrder = %s,
+                    UpdatedAt = SYSUTCDATETIME()
                 WHERE Code = %s
-                  AND (Area <> %s OR Name <> %s OR Description <> %s OR SortOrder <> %s)
+                  AND (Area <> %s OR ISNULL(AreaCode, '') <> %s OR Name <> %s OR Description <> %s
+                       OR SortOrder <> %s)
                 """,
                 (
-                    permission.area, permission.name, permission.description, permission.sort_order,
+                    area_name, permission.area, permission.name, permission.description, permission.sort_order,
                     permission.code,
-                    permission.area, permission.name, permission.description, permission.sort_order,
+                    area_name, permission.area, permission.name, permission.description, permission.sort_order,
                 ),
             )
             cursor.execute(
                 """
                 IF NOT EXISTS (SELECT 1 FROM tblPermissions WHERE Code = %s)
-                    INSERT INTO tblPermissions (Code, Area, Name, Description, SortOrder)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO tblPermissions (Code, Area, AreaCode, Name, Description, SortOrder)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (
                     permission.code,
-                    permission.code, permission.area, permission.name, permission.description, permission.sort_order,
+                    permission.code, area_name, permission.area, permission.name, permission.description,
+                    permission.sort_order,
                 ),
             )
+        # Parents are set after every row exists, because ParentCode references tblPermissions.
+        for permission in CATALOG:
+            if permission.parent:
+                cursor.execute(
+                    """
+                    UPDATE tblPermissions
+                    SET ParentCode = %s, UpdatedAt = SYSUTCDATETIME()
+                    WHERE Code = %s AND ISNULL(ParentCode, '') <> %s
+                    """,
+                    (permission.parent, permission.code, permission.parent),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE tblPermissions
+                    SET ParentCode = NULL, UpdatedAt = SYSUTCDATETIME()
+                    WHERE Code = %s AND ParentCode IS NOT NULL
+                    """,
+                    (permission.code,),
+                )
+        for role in ROLES:
+            cursor.execute(
+                """
+                UPDATE tblRoles
+                SET Name = %s, Description = %s, SortOrder = %s, UpdatedAt = SYSUTCDATETIME()
+                WHERE Code = %s AND (Name <> %s OR Description <> %s OR SortOrder <> %s)
+                """,
+                (
+                    role.name, role.description, role.sort_order,
+                    role.code,
+                    role.name, role.description, role.sort_order,
+                ),
+            )
+            cursor.execute(
+                """
+                IF NOT EXISTS (SELECT 1 FROM tblRoles WHERE Code = %s)
+                    INSERT INTO tblRoles (Code, Name, Description, SortOrder)
+                    VALUES (%s, %s, %s, %s)
+                """,
+                (role.code, role.code, role.name, role.description, role.sort_order),
+            )
+            cursor.execute("SELECT PermissionCode FROM tblRolePermissions WHERE RoleCode = %s", (role.code,))
+            stored = {row["PermissionCode"] for row in cursor.fetchall()}
+            wanted = set(role.permissions)
+            for code in stored - wanted:
+                cursor.execute(
+                    "DELETE FROM tblRolePermissions WHERE RoleCode = %s AND PermissionCode = %s",
+                    (role.code, code),
+                )
+            for code in ordered(wanted - stored):
+                cursor.execute(
+                    "INSERT INTO tblRolePermissions (RoleCode, PermissionCode) VALUES (%s, %s)",
+                    (role.code, code),
+                )
+        self._backfill_parents(cursor)
         self.db.commit()
+
+    @staticmethod
+    def _backfill_parents(cursor) -> None:
+        cursor.execute(
+            """
+            INSERT INTO tblAdminPermissions (AdminId, PermissionCode)
+            SELECT DISTINCT ap.AdminId, p.ParentCode
+            FROM tblAdminPermissions ap
+            JOIN tblPermissions p ON p.Code = ap.PermissionCode
+            WHERE p.ParentCode IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM tblAdminPermissions held
+                  WHERE held.AdminId = ap.AdminId AND held.PermissionCode = p.ParentCode
+              )
+            """
+        )
 
     def codes_for(self, admin_id: int) -> list[str]:
         cursor = self.db.cursor()

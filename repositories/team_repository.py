@@ -53,14 +53,13 @@ class TeamRepository:
         cursor = self.db.cursor()
 
         query = """
-            INSERT INTO tblTeams (Name, Slogan, LogoUrl)
-            VALUES (%s, %s, %s)
+            INSERT INTO tblTeams (Name, Slogan)
+            VALUES (%s, %s)
         """
 
         cursor.execute(query, (
             request.name,
-            request.slogan,
-            request.logo_url
+            request.slogan
         ))
 
         self.db.commit()
@@ -76,8 +75,7 @@ class TeamRepository:
 
         field_mapping = {
             "name": "Name",
-            "slogan": "Slogan",
-            "logo_url": "LogoUrl"
+            "slogan": "Slogan"
         }
 
         fields = []
@@ -104,6 +102,28 @@ class TeamRepository:
         self.db.commit()
 
         return self.get_by_id(team_id)
+
+    def get_logo_key(self, team_id: int) -> tuple[bool, Optional[str]]:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT LogoStorageKey
+            FROM tblTeams
+            WHERE Id = %s AND Void = 0
+        """, (team_id,))
+        row = cursor.fetchone()
+        if not row:
+            return False, None
+        return True, row["LogoStorageKey"]
+
+    def set_logo(self, team_id: int, url: Optional[str], key: Optional[str]) -> bool:
+        cursor = self.db.cursor()
+        cursor.execute("""
+            UPDATE tblTeams
+            SET LogoUrl = %s, LogoStorageKey = %s, UpdatedAt = SYSUTCDATETIME()
+            WHERE Id = %s AND Void = 0
+        """, (url, key, team_id))
+        self.db.commit()
+        return cursor.rowcount > 0
 
     def delete(self, team_id: int) -> bool:
         cursor = self.db.cursor()

@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends
-from typing import List
+from fastapi import APIRouter, Depends, File, UploadFile
+from typing import List, Optional
 
 from repositories.player_repository import PlayerRepository
 from services.player_service import PlayerService
@@ -14,7 +14,9 @@ from schemas.player_schema import (
 )
 from core.database import get_db
 from core.response import ApiResponse
+from core.storage import MediaStorage, get_storage
 from routes.auth_routes import require_permission
+from services.media_service import MediaService, read_image
 
 
 router = APIRouter(
@@ -29,6 +31,13 @@ def get_controller(db=Depends(get_db)) -> PlayerController:
     country_service = CountryService(country_repository)
     service = PlayerService(player_repository, country_service)
     return PlayerController(service)
+
+
+def get_media_service(
+    db=Depends(get_db),
+    storage: Optional[MediaStorage] = Depends(get_storage),
+) -> MediaService:
+    return MediaService(storage, player_repository=PlayerRepository(db))
 
 
 @router.get("/", response_model=ApiResponse[List[PlayerResponse]])
@@ -92,6 +101,35 @@ def update(
     return ApiResponse(
         success=True,
         message="Player updated successfully",
+        data=result
+    )
+
+
+@router.put("/{player_id}/avatar", response_model=ApiResponse[PlayerResponse], dependencies=[Depends(require_permission("players.update"))])
+def upload_avatar(
+    player_id: int,
+    file: UploadFile = File(...),
+    media: MediaService = Depends(get_media_service)
+):
+    result = media.set_player_avatar(player_id, read_image(file.file))
+
+    return ApiResponse(
+        success=True,
+        message="Player picture updated successfully",
+        data=result
+    )
+
+
+@router.delete("/{player_id}/avatar", response_model=ApiResponse[PlayerResponse], dependencies=[Depends(require_permission("players.update"))])
+def remove_avatar(
+    player_id: int,
+    media: MediaService = Depends(get_media_service)
+):
+    result = media.remove_player_avatar(player_id)
+
+    return ApiResponse(
+        success=True,
+        message="Player picture removed successfully",
         data=result
     )
 

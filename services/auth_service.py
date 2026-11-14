@@ -6,6 +6,8 @@ from core.permissions import (
     UPDATE_ADMINS,
     describe,
     denied_message,
+    missing_parent_message,
+    missing_parents,
 )
 from core.security import PASSWORD_ITERATIONS, create_access_token, decode_access_token, hash_password, verify_password
 from repositories.admin_repository import AdminRepository
@@ -36,6 +38,12 @@ class AuthService:
         if unknown:
             raise HTTPException(status_code=400, detail=f"Unknown permission: {', '.join(unknown)}.")
         return set(codes)
+
+    @staticmethod
+    def _ensure_parents(codes: set[str]) -> None:
+        missing = missing_parents(codes)
+        if missing:
+            raise HTTPException(status_code=400, detail=missing_parent_message(missing))
 
     def _with_permissions(self, admin: AdminResponse) -> AdminResponse:
         return admin.model_copy(update={"permissions": self.permissions.codes_for(admin.id)})
@@ -135,6 +143,7 @@ class AuthService:
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"You can only grant permissions you hold. You do not hold {describe(missing)}.",
                 )
+            self._ensure_parents(requested)
         return self._create(request, requested, actor.id)
 
     def bootstrap_admin(self, request: AdminCreateRequest) -> AdminResponse:
@@ -212,6 +221,7 @@ class AuthService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"You can only change permissions you hold. You do not hold {describe(outside)}.",
             )
+        self._ensure_parents(requested)
         if MANAGE_PERMISSIONS in revoke:
             if admin_id == actor.id:
                 raise HTTPException(

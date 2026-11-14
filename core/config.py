@@ -37,6 +37,16 @@ class Settings:
         self.DB_NAME: str = self._get_env("CPL_DB_NAME")
         self.DB_POOL_SIZE: int = self._get_int_env("CPL_DB_POOL_SIZE")
 
+        self.CLOUDINARY_URL: str | None = self._get_optional_env("CPL_CLOUDINARY_URL")
+        self.MEDIA_FOLDER: str = (self._get_optional_env("CPL_MEDIA_FOLDER") or "cpl").strip("/")
+
+    @staticmethod
+    def _get_optional_env(key: str) -> str | None:
+        value = os.getenv(key)
+        if value is None or value.strip() == "":
+            return None
+        return value.strip()
+
     @staticmethod
     def _get_env(key: str) -> str:
         value = os.getenv(key)
