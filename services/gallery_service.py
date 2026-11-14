@@ -1,6 +1,8 @@
 import logging
+import re
 import struct
 from datetime import date, datetime
+from urllib.parse import urlparse
 
 from fastapi import HTTPException, UploadFile
 
@@ -16,13 +18,20 @@ from schemas.gallery_schema import (
     GallerySeason,
     GalleryUpdateRequest,
 )
-from services.media_service import image_format, normalize_picture_link, read_image
+from services.media_service import MAX_IMAGE_BYTES, image_format, normalize_picture_link
 
 logger = logging.getLogger(__name__)
 
 _MAX_EDGE = 20000
 _MAX_SEASONS = 20
 _MAX_BULK = 100
+_MAX_VIDEO_BYTES = 50 * 1024 * 1024
+_VIDEO_FRAME = (1920, 1080)
+_YOUTUBE_ID = re.compile(
+    r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:[^#]*&)?v=|embed/|shorts/|live/))([A-Za-z0-9_-]{11})"
+)
+_VIMEO_ID = re.compile(r"(?:player\.)?vimeo\.com/(?:video/)?(\d+)")
+_CHUNK_BYTES = 1024 * 1024
 _COLUMNS = {
     "caption": "Caption",
     "alt_text": "AltText",
@@ -32,11 +41,59 @@ _COLUMNS = {
 
 
 def gallery_link(url: str) -> str:
-    """A public image address. Gallery links are stored as given and are never downloaded."""
+    """A public image or video address. Gallery links are stored as given and are never downloaded."""
     text = (url or "").strip()
     if "#" in text:
-        raise HTTPException(status_code=400, detail="Enter the image link without a # fragment.")
+        raise HTTPException(status_code=400, detail="Enter the link without a # fragment.")
     return normalize_picture_link(text)
+
+
+def media_kind(url: str) -> str:
+    """image or video, from a YouTube or Vimeo address, a direct video file, or anything else."""
+    text = url or ""
+    if _YOUTUBE_ID.search(text) or _VIMEO_ID.search(text):
+        return "video"
+    path = urlparse(text.split("#", 1)[0]).path.lower()
+    if path.endswith((".mp4", ".webm", ".mov", ".m4v", ".ogg")) or "/video/upload/" in text.lower():
+        return "video"
+    return "image"
+
+
+def video_poster(url: str) -> str | None:
+    match = _YOUTUBE_ID.search(url or "")
+    if not match:
+        return None
+    return f"https://i.ytimg.com/vi/{match.group(1)}/hqdefault.jpg"
+
+
+def _is_video_bytes(data: bytes) -> bool:
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return True
+    return data.startswith(b"\x1a\x45\xdf\xa3")
+
+
+def read_gallery_upload(stream) -> tuple[bytes, str]:
+    """Read one uploaded photo or video. Images stay at 5 MB. Videos may be 50 MB."""
+    chunks = []
+    total = 0
+    while True:
+        chunk = stream.read(_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _MAX_VIDEO_BYTES:
+            raise HTTPException(status_code=400, detail="The file must be 50 MB or smaller.")
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    if not data:
+        raise HTTPException(status_code=400, detail="Choose a photo or a video to upload.")
+    if image_format(data):
+        if len(data) > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=400, detail="Image must be 5 MB or smaller.")
+        return data, "image"
+    if _is_video_bytes(data):
+        return data, "video"
+    raise HTTPException(status_code=400, detail="Use a JPEG, PNG, WebP, MP4, WebM or MOV file.")
 
 
 def image_pixel_size(data: bytes) -> tuple[int, int] | None:
@@ -150,6 +207,17 @@ def _checked_size(width: int | None, height: int | None, data: bytes | None = No
     return int(width), int(height)
 
 
+def _video_frame(width: int | None, height: int | None) -> tuple[int, int]:
+    if (
+        width is not None
+        and height is not None
+        and 1 <= int(width) <= _MAX_EDGE
+        and 1 <= int(height) <= _MAX_EDGE
+    ):
+        return int(width), int(height)
+    return _VIDEO_FRAME
+
+
 def _like_pattern(caption: str | None) -> str:
     text = (caption or "").strip()
     if not text:
@@ -167,11 +235,14 @@ class GalleryService:
         seasons = []
         for row in self.repository.public_seasons():
             cover = None
+            if int(row.get("PhotoCount") or 0) < 1:
+                continue
             if row.get("CoverId") is not None:
                 cover = self._photo(
                     {
                         "Id": row["CoverId"],
                         "SourceType": row.get("CoverSource") or "link",
+                        "MediaType": row.get("CoverMedia") or "image",
                         "Url": row["CoverUrl"],
                         "StorageKey": row.get("CoverKey"),
                         "Width": row["CoverWidth"],
@@ -247,20 +318,34 @@ class GalleryService:
         filename = getattr(file, "filename", None) if file is not None else None
         link = (url or "").strip()
         if filename and link:
-            raise HTTPException(status_code=400, detail="Send an image file or a public link, not both.")
+            raise HTTPException(status_code=400, detail="Send a file or a public link, not both.")
         stored: StoredImage | None = None
         if filename:
             if self.storage is None:
-                raise HTTPException(status_code=503, detail="Picture storage is not configured on the server.")
-            data = read_image(getattr(file, "file", file))
-            width, height = _checked_size(width, height, data)
-            stored = self.storage.upload(data, "gallery")
-            source = {"source_type": "upload", "url": stored.url, "storage_key": stored.key}
+                raise HTTPException(status_code=503, detail="Media storage is not configured on the server.")
+            data, media_type = read_gallery_upload(getattr(file, "file", file))
+            if media_type == "video":
+                width, height = _video_frame(width, height)
+                stored = self.storage.upload_video(data)
+            else:
+                width, height = _checked_size(width, height, data)
+                stored = self.storage.upload(data, "gallery")
+            source = {
+                "source_type": "upload",
+                "media_type": media_type,
+                "url": stored.url,
+                "storage_key": stored.key,
+            }
         elif link:
-            width, height = _checked_size(width, height)
-            source = {"source_type": "link", "url": gallery_link(link), "storage_key": None}
+            clean = gallery_link(link)
+            media_type = media_kind(clean)
+            if media_type == "video":
+                width, height = _video_frame(width, height)
+            else:
+                width, height = _checked_size(width, height)
+            source = {"source_type": "link", "media_type": media_type, "url": clean, "storage_key": None}
         else:
-            raise HTTPException(status_code=400, detail="Choose an image file or a public image link.")
+            raise HTTPException(status_code=400, detail="Choose a photo, a video, or a public link.")
         row = {
             **source,
             "width": width,
@@ -368,18 +453,26 @@ class GalleryService:
     def _photo(self, row: dict, season_ids: list[int]) -> GalleryPhoto:
         url = row["Url"]
         key = row.get("StorageKey")
+        media_type = row.get("MediaType") or "image"
+        if media_type not in {"image", "video"}:
+            media_type = "image"
         thumbnail = url
         placeholder = None
         if key and self.storage is not None and self.storage.owns(key):
             variants = self.storage.gallery_variants(key)
             thumbnail = variants["thumbnail_url"]
             placeholder = variants["placeholder_url"]
+        elif media_type == "video":
+            poster = video_poster(url)
+            if poster:
+                thumbnail = poster
         taken = row.get("TakenOn")
         if isinstance(taken, datetime):
             taken = taken.date()
         return GalleryPhoto(
             id=int(row["Id"]),
             source_type=row["SourceType"],
+            media_type=media_type,
             url=url,
             thumbnail_url=thumbnail,
             placeholder_url=placeholder,

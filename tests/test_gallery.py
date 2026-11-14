@@ -1,3 +1,4 @@
+import io
 import struct
 import unittest
 
@@ -12,6 +13,7 @@ from services.gallery_service import (
     GalleryService,
     gallery_link,
     image_pixel_size,
+    media_kind,
     page_by_position,
 )
 
@@ -36,8 +38,7 @@ class MemoryGallery:
         return {season_id for season_id in season_ids if season_id in self.seasons}
 
     def season_is_public(self, season_id):
-        season = self.seasons.get(season_id)
-        return bool(season and season["show"])
+        return season_id in self.seasons
 
     def insert(self, row):
         item_id = self.next_id
@@ -45,6 +46,7 @@ class MemoryGallery:
         self.items[item_id] = {
             "Id": item_id,
             "SourceType": row["source_type"],
+            "MediaType": row.get("media_type") or "image",
             "Url": row["url"],
             "StorageKey": row["storage_key"],
             "Width": row["width"],
@@ -152,7 +154,7 @@ class MemoryGallery:
         return rows
 
     def list_public(self, season_id, after_sort, after_id, limit):
-        if not self.season_is_public(season_id):
+        if season_id not in self.seasons:
             return []
         rows = self._rows(season_id, True)
         if after_sort is not None:
@@ -188,9 +190,9 @@ class MemoryGallery:
     def public_seasons(self):
         result = []
         for season_id, season in self.seasons.items():
-            if not season["show"]:
-                continue
             rows = self._rows(season_id, True)
+            if not rows:
+                continue
             cover = next((row for row in rows if row["IsCover"]), rows[0] if rows else None)
             result.append(
                 {
@@ -199,6 +201,7 @@ class MemoryGallery:
                     "PhotoCount": len(rows),
                     "CoverId": None if cover is None else cover["Id"],
                     "CoverSource": None if cover is None else cover["SourceType"],
+                    "CoverMedia": None if cover is None else cover.get("MediaType") or "image",
                     "CoverUrl": None if cover is None else cover["Url"],
                     "CoverKey": None if cover is None else cover["StorageKey"],
                     "CoverWidth": None if cover is None else cover["Width"],
@@ -234,12 +237,20 @@ class FakeStorage:
         self.uploads = 0
 
     def owns(self, key):
-        return isinstance(key, str) and key.startswith("cpl/gallery/") and len(key.rsplit("/", 1)[-1]) == 32
+        if not isinstance(key, str):
+            return False
+        tail = key.rsplit("/", 1)[-1]
+        return len(tail) == 32 and (key.startswith("cpl/gallery/") or key.startswith("cpl/videos/"))
 
     def upload(self, data, kind):
         self.uploads += 1
         key = "cpl/gallery/" + f"{self.uploads:032x}"
         return StoredImage(url=f"https://img.test/{key}", key=key)
+
+    def upload_video(self, data):
+        self.uploads += 1
+        key = "cpl/videos/" + f"{self.uploads:032x}"
+        return StoredImage(url=f"https://img.test/{key}.mp4", key=key)
 
     def delete(self, key):
         if self.fail_delete:
@@ -292,26 +303,21 @@ class GalleryRuleTests(unittest.TestCase):
         self.assertEqual(self.storage.deleted, [])
         self.assertEqual(self.service.public_page(1, None, 24).items, [])
 
-    def test_hidden_season_and_draft_stay_off_the_public_gallery(self):
+    def test_hidden_season_with_published_media_stays_on_the_public_gallery(self):
         shown = self._link(seasons="1")
         hidden = self._link(url="https://cdn.example/hidden.jpg", seasons="2")
-        self.service.update(
-            shown.id,
-            GalleryUpdateRequest(is_published=True),
-            self.curator,
-            {"is_published"},
-        )
-        self.service.update(
-            hidden.id,
-            GalleryUpdateRequest(is_published=True),
-            self.curator,
-            {"is_published"},
-        )
+        draft = self._link(url="https://cdn.example/draft.jpg", seasons="3")
+        self.service.update(shown.id, GalleryUpdateRequest(is_published=True), self.curator, {"is_published"})
+        self.service.update(hidden.id, GalleryUpdateRequest(is_published=True), self.curator, {"is_published"})
         public = self.service.public_page(1, None, 24)
         self.assertEqual([item.id for item in public.items], [shown.id])
-        self.assertEqual(self.service.public_page(2, None, 24).items, [])
+        self.assertEqual([item.id for item in self.service.public_page(2, None, 24).items], [hidden.id])
+        self.assertEqual(self.service.public_photo(hidden.id).season_ids, [2])
+        names = [season.name for season in self.service.public_seasons()]
+        self.assertEqual(names, ["Shown", "Hidden"])
+        self.assertNotIn(draft.id, [item.id for item in self.service.public_page(3, None, 24).items])
         with self.assertRaises(HTTPException) as raised:
-            self.service.public_photo(hidden.id)
+            self.service.public_photo(draft.id)
         self.assertEqual(raised.exception.status_code, 404)
 
     def test_publishing_requires_the_publish_permission(self):
@@ -376,3 +382,38 @@ class GalleryRuleTests(unittest.TestCase):
         self.assertEqual([item.id for item in self.service.public_page(1, None, 24).items], [first.id])
         with self.assertRaises(HTTPException):
             self.service.bulk(GalleryBulkRequest(action="publish", ids=list(range(1, 102))), self.curator)
+
+    def test_youtube_and_file_links_are_videos_and_photos_stay_images(self):
+        photo = self._link()
+        self.assertEqual(photo.media_type, "image")
+        self.assertEqual(media_kind("https://cdn.example/a.jpg"), "image")
+        clip = self._link(url="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        self.assertEqual(clip.media_type, "video")
+        self.assertEqual(clip.thumbnail_url, "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")
+        direct = self._link(url="https://cdn.example/match.mp4", width=None, height=None)
+        self.assertEqual(direct.media_type, "video")
+        self.assertEqual((direct.width, direct.height), (1920, 1080))
+
+    def test_mp4_upload_uses_video_storage(self):
+        data = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 8
+
+        class _Upload:
+            filename = "clip.mp4"
+            file = io.BytesIO(data)
+
+        clip = self.service.create(
+            self.curator,
+            file=_Upload(),
+            url=None,
+            season_ids="1",
+            caption=None,
+            alt_text=None,
+            width=1280,
+            height=720,
+            taken_on=None,
+        )
+        self.assertEqual(clip.media_type, "video")
+        self.assertEqual((clip.width, clip.height), (1280, 720))
+        self.assertTrue(clip.url.endswith(".mp4"))
+        self.service.delete(clip.id, self.curator)
+        self.assertTrue(self.storage.deleted[0].startswith("cpl/videos/"))

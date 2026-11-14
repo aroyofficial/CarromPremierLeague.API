@@ -106,7 +106,7 @@ def create_gallery(
         height=height,
         taken_on=taken_on,
     )
-    return ApiResponse(success=True, message="Photo saved as a draft.", data=photo)
+    return ApiResponse(success=True, message="Saved as a draft.", data=photo)
 
 
 @router.patch("/gallery/{item_id}", response_model=ApiResponse[GalleryPhoto])

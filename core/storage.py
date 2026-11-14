@@ -40,7 +40,7 @@ def default_key(folder: str, kind: ImageKind) -> str:
 
 
 # public_id values this app creates: "<folder>/players|teams|gallery/<32 hex>".
-_OWNED_KEY = re.compile(r"^(?P<folder>.+)/(?P<kind>players|teams|gallery)/(?P<id>[0-9a-f]{32})$")
+_OWNED_KEY = re.compile(r"^(?P<folder>.+)/(?P<kind>players|teams|gallery|videos)/(?P<id>[0-9a-f]{32})$")
 
 
 def is_owned_image_key(key: object, folder: str) -> bool:
@@ -100,13 +100,38 @@ class CloudinaryStorage:
             return
         import cloudinary.uploader
 
-        cloudinary.uploader.destroy(key, resource_type="image", invalidate=True)
+        resource = "video" if "/videos/" in key else "image"
+        cloudinary.uploader.destroy(key, resource_type=resource, invalidate=True)
+
+    def upload_video(self, data: bytes) -> StoredImage:
+        import cloudinary.uploader
+
+        result = cloudinary.uploader.upload(
+            io.BytesIO(data),
+            resource_type="video",
+            folder=f"{self.folder}/videos",
+            public_id=uuid.uuid4().hex,
+            overwrite=False,
+        )
+        public_id = result["public_id"]
+        from cloudinary.utils import cloudinary_url
+
+        url = cloudinary_url(public_id, resource_type="video", secure=True, format="mp4")[0]
+        return StoredImage(url=url, key=public_id)
 
     def default_url(self, kind: ImageKind) -> str:
         return self._delivery_url(default_key(self.folder, kind))
 
     def gallery_variants(self, public_id: str) -> dict[str, str]:
         """Small delivery URLs derived from an upload this app owns. The stored URL stays full size."""
+        if "/videos/" in public_id:
+            return {
+                "thumbnail_url": self._video_poster(public_id, [{"width": 640, "crop": "limit"}]),
+                "placeholder_url": self._video_poster(
+                    public_id,
+                    [{"width": 40, "crop": "limit", "effect": "blur:1000", "quality": 30}],
+                ),
+            }
         return {
             "thumbnail_url": self._transformed(public_id, [{"width": 640, "crop": "limit"}]),
             "placeholder_url": self._transformed(
@@ -114,6 +139,18 @@ class CloudinaryStorage:
                 [{"width": 40, "crop": "limit", "effect": "blur:1000", "quality": 30}],
             ),
         }
+
+    @staticmethod
+    def _video_poster(public_id: str, transformation: list) -> str:
+        from cloudinary.utils import cloudinary_url
+
+        return cloudinary_url(
+            public_id,
+            resource_type="video",
+            format="jpg",
+            secure=True,
+            transformation=transformation,
+        )[0]
 
     @staticmethod
     def _transformed(public_id: str, transformation: list) -> str:

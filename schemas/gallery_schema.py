@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 class GalleryPhoto(BaseModel):
     id: int
     source_type: str
+    media_type: Literal["image", "video"] = "image"
     url: str
     thumbnail_url: str
     placeholder_url: Optional[str] = None

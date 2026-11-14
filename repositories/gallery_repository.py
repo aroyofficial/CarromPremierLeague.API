@@ -1,5 +1,5 @@
 class GalleryRepository:
-    """Season photos. Public reads only see published photos in seasons that are shown."""
+    """Season media. Public reads see published items. A season Show flag does not hide its gallery."""
 
     def __init__(self, db):
         self.db = db
@@ -18,7 +18,7 @@ class GalleryRepository:
     def season_is_public(self, season_id: int) -> bool:
         cursor = self.db.cursor()
         cursor.execute(
-            "SELECT TOP (1) Id FROM tblSeasons WHERE Id = %s AND Void = 0 AND [Show] = 1",
+            "SELECT TOP (1) Id FROM tblSeasons WHERE Id = %s AND Void = 0",
             (season_id,),
         )
         return cursor.fetchone() is not None
@@ -28,11 +28,12 @@ class GalleryRepository:
         cursor.execute(
             """
             INSERT INTO tblGalleryItems
-                (SourceType, Url, StorageKey, Width, Height, Caption, AltText, TakenOn, IsPublished, CreatedBy, UpdatedBy)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s)
+                (SourceType, MediaType, Url, StorageKey, Width, Height, Caption, AltText, TakenOn, IsPublished, CreatedBy, UpdatedBy)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s)
             """,
             (
                 row["source_type"],
+                row.get("media_type") or "image",
                 row["url"],
                 row["storage_key"],
                 row["width"],
@@ -89,7 +90,7 @@ class GalleryRepository:
         cursor = self.db.cursor()
         cursor.execute(
             """
-            SELECT Id, SourceType, Url, StorageKey, Width, Height, Caption, AltText, TakenOn, IsPublished
+            SELECT Id, SourceType, MediaType, Url, StorageKey, Width, Height, Caption, AltText, TakenOn, IsPublished
             FROM tblGalleryItems
             WHERE Id = %s AND Void = 0
             """,
@@ -102,7 +103,7 @@ class GalleryRepository:
         cursor = self.db.cursor()
         cursor.execute(
             """
-            SELECT gi.Id, gi.SourceType, gi.Url, gi.StorageKey, gi.Width, gi.Height,
+            SELECT gi.Id, gi.SourceType, gi.MediaType, gi.Url, gi.StorageKey, gi.Width, gi.Height,
                    gi.Caption, gi.AltText, gi.TakenOn, gi.IsPublished,
                    CAST(0 AS INT) AS SortOrder, CAST(0 AS BIT) AS IsCover
             FROM tblGalleryItems gi
@@ -110,7 +111,7 @@ class GalleryRepository:
               AND EXISTS (
                   SELECT 1
                   FROM tblGalleryItemSeasons gis
-                  JOIN tblSeasons s ON s.Id = gis.SeasonId AND s.Void = 0 AND s.[Show] = 1
+                  JOIN tblSeasons s ON s.Id = gis.SeasonId AND s.Void = 0
                   WHERE gis.ItemId = gi.Id
               )
             """,
@@ -175,7 +176,7 @@ class GalleryRepository:
         if not item_ids:
             return {}
         marks = ", ".join(["%s"] * len(item_ids))
-        shown = "AND s.[Show] = 1" if public_only else ""
+        shown = ""
         cursor = self.db.cursor()
         cursor.execute(
             f"""
@@ -204,11 +205,11 @@ class GalleryRepository:
         params.append(limit)
         cursor.execute(
             f"""
-            SELECT gi.Id, gi.SourceType, gi.Url, gi.StorageKey, gi.Width, gi.Height,
+            SELECT gi.Id, gi.SourceType, gi.MediaType, gi.Url, gi.StorageKey, gi.Width, gi.Height,
                    gi.Caption, gi.AltText, gi.TakenOn, gi.IsPublished, gis.SortOrder, gis.IsCover
             FROM tblGalleryItemSeasons gis
             JOIN tblGalleryItems gi ON gi.Id = gis.ItemId AND gi.Void = 0 AND gi.IsPublished = 1
-            JOIN tblSeasons s ON s.Id = gis.SeasonId AND s.Void = 0 AND s.[Show] = 1
+            JOIN tblSeasons s ON s.Id = gis.SeasonId AND s.Void = 0
             WHERE gis.SeasonId = %s
               {after}
             ORDER BY gis.SortOrder ASC, gi.Id ASC
@@ -232,7 +233,7 @@ class GalleryRepository:
             params.append(limit)
             cursor.execute(
                 f"""
-                SELECT gi.Id, gi.SourceType, gi.Url, gi.StorageKey, gi.Width, gi.Height,
+                SELECT gi.Id, gi.SourceType, gi.MediaType, gi.Url, gi.StorageKey, gi.Width, gi.Height,
                        gi.Caption, gi.AltText, gi.TakenOn, gi.IsPublished, gis.SortOrder, gis.IsCover
                 FROM tblGalleryItems gi
                 JOIN tblGalleryItemSeasons gis ON gis.ItemId = gi.Id AND gis.SeasonId = %s
@@ -254,7 +255,7 @@ class GalleryRepository:
         params.append(limit)
         cursor.execute(
             f"""
-            SELECT gi.Id, gi.SourceType, gi.Url, gi.StorageKey, gi.Width, gi.Height,
+            SELECT gi.Id, gi.SourceType, gi.MediaType, gi.Url, gi.StorageKey, gi.Width, gi.Height,
                    gi.Caption, gi.AltText, gi.TakenOn, gi.IsPublished,
                    CAST(0 AS INT) AS SortOrder, CAST(0 AS BIT) AS IsCover
             FROM tblGalleryItems gi
@@ -280,20 +281,27 @@ class GalleryRepository:
                        JOIN tblGalleryItems gi ON gi.Id = gis.ItemId AND gi.Void = 0 AND gi.IsPublished = 1
                        WHERE gis.SeasonId = s.Id
                    ) AS PhotoCount,
-                   cover.Id AS CoverId, cover.SourceType AS CoverSource, cover.Url AS CoverUrl, cover.StorageKey AS CoverKey,
+                   cover.Id AS CoverId, cover.SourceType AS CoverSource, cover.MediaType AS CoverMedia,
+                   cover.Url AS CoverUrl, cover.StorageKey AS CoverKey,
                    cover.Width AS CoverWidth, cover.Height AS CoverHeight,
                    cover.Caption AS CoverCaption, cover.AltText AS CoverAlt, cover.TakenOn AS CoverTakenOn,
                    cover.IsCover AS CoverIsCover, cover.SortOrder AS CoverSort
             FROM tblSeasons s
             OUTER APPLY (
-                SELECT TOP (1) gi.Id, gi.SourceType, gi.Url, gi.StorageKey, gi.Width, gi.Height,
+                SELECT TOP (1) gi.Id, gi.SourceType, gi.MediaType, gi.Url, gi.StorageKey, gi.Width, gi.Height,
                        gi.Caption, gi.AltText, gi.TakenOn, gis.IsCover, gis.SortOrder
                 FROM tblGalleryItemSeasons gis
                 JOIN tblGalleryItems gi ON gi.Id = gis.ItemId AND gi.Void = 0 AND gi.IsPublished = 1
                 WHERE gis.SeasonId = s.Id
                 ORDER BY gis.IsCover DESC, gis.SortOrder ASC, gi.Id ASC
             ) cover
-            WHERE s.Void = 0 AND s.[Show] = 1
+            WHERE s.Void = 0
+              AND EXISTS (
+                  SELECT 1
+                  FROM tblGalleryItemSeasons published
+                  JOIN tblGalleryItems item ON item.Id = published.ItemId AND item.Void = 0 AND item.IsPublished = 1
+                  WHERE published.SeasonId = s.Id
+              )
             ORDER BY s.StartDate DESC, s.Id DESC
             """
         )
