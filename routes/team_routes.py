@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from typing import List, Optional
 
 from schemas.team_schema import (
@@ -13,7 +13,7 @@ from core.database import get_db
 from core.response import ApiResponse
 from core.storage import MediaStorage, get_storage
 from routes.auth_routes import require_permission
-from services.media_service import MediaService, read_image
+from services.media_service import MediaService
 
 
 router = APIRouter(
@@ -92,10 +92,11 @@ def update(
 @router.put("/{team_id}/logo", response_model=ApiResponse[TeamResponse], dependencies=[Depends(require_permission("teams.update"))])
 def upload_logo(
     team_id: int,
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
     media: MediaService = Depends(get_media_service)
 ):
-    result = media.set_team_logo(team_id, read_image(file.file))
+    result = media.apply_team_logo(team_id, file, url)
 
     return ApiResponse(
         success=True,

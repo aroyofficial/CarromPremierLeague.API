@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from typing import List, Optional
 
 from repositories.player_repository import PlayerRepository
@@ -16,7 +16,7 @@ from core.database import get_db
 from core.response import ApiResponse
 from core.storage import MediaStorage, get_storage
 from routes.auth_routes import require_permission
-from services.media_service import MediaService, read_image
+from services.media_service import MediaService
 
 
 router = APIRouter(
@@ -108,10 +108,11 @@ def update(
 @router.put("/{player_id}/avatar", response_model=ApiResponse[PlayerResponse], dependencies=[Depends(require_permission("players.update"))])
 def upload_avatar(
     player_id: int,
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
     media: MediaService = Depends(get_media_service)
 ):
-    result = media.set_player_avatar(player_id, read_image(file.file))
+    result = media.apply_player_picture(player_id, file, url)
 
     return ApiResponse(
         success=True,

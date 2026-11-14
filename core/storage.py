@@ -1,4 +1,5 @@
 import io
+import re
 import uuid
 from dataclasses import dataclass
 from functools import lru_cache
@@ -26,6 +27,8 @@ class StoredImage:
 class MediaStorage(Protocol):
     def upload(self, data: bytes, kind: ImageKind) -> StoredImage: ...
 
+    def owns(self, key: str) -> bool: ...
+
     def delete(self, key: str) -> None: ...
 
     def default_url(self, kind: ImageKind) -> str: ...
@@ -33,6 +36,21 @@ class MediaStorage(Protocol):
 
 def default_key(folder: str, kind: ImageKind) -> str:
     return f"{folder}/defaults/{kind}"
+
+
+# public_id values this app creates: "<folder>/players/<32 hex>" or "<folder>/teams/<32 hex>".
+_OWNED_KEY = re.compile(r"^(?P<folder>.+)/(?P<kind>players|teams)/(?P<id>[0-9a-f]{32})$")
+
+
+def is_owned_image_key(key: object, folder: str) -> bool:
+    """True when the key is a Cloudinary image this app uploaded, not a link or a default."""
+    if not isinstance(key, str):
+        return False
+    folder = (folder or "").strip("/")
+    if not folder or "://" in key or ".." in key:
+        return False
+    match = _OWNED_KEY.fullmatch(key.strip())
+    return bool(match and match.group("folder") == folder)
 
 
 class CloudinaryStorage:
@@ -73,7 +91,12 @@ class CloudinaryStorage:
         public_id = result["public_id"]
         return StoredImage(url=self._delivery_url(public_id, result.get("version")), key=public_id)
 
+    def owns(self, key: str) -> bool:
+        return is_owned_image_key(key, self.folder)
+
     def delete(self, key: str) -> None:
+        if not self.owns(key):
+            return
         import cloudinary.uploader
 
         cloudinary.uploader.destroy(key, resource_type="image", invalidate=True)
