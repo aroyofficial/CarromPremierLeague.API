@@ -295,6 +295,14 @@ class CloudinaryUrlTests(unittest.TestCase):
         owned = "cpl/players/" + ("cd" * 16)
         self.assertTrue(storage.owns(owned))
         self.assertTrue(storage.owns("cpl/teams/" + ("cd" * 16)))
+        self.assertTrue(storage.owns("cpl/gallery/" + ("cd" * 16)))
+        from core.storage import _INCOMING, _SUBFOLDER
+
+        self.assertEqual(_INCOMING["gallery"], [{"width": 2560, "crop": "limit"}])
+        self.assertEqual(_SUBFOLDER["gallery"], "gallery")
+        variants = storage.gallery_variants("cpl/gallery/" + ("cd" * 16))
+        self.assertIn("w_640", variants["thumbnail_url"])
+        self.assertIn("e_blur", variants["placeholder_url"])
         self.assertFalse(storage.owns("https://cdn.example/a.png"))
         self.assertFalse(storage.owns("cpl/defaults/player"))
         self.assertFalse(storage.owns("other/players/" + ("cd" * 16)))

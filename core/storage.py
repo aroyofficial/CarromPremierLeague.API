@@ -8,14 +8,15 @@ from urllib.parse import urlparse
 
 from core.config import settings
 
-ImageKind = Literal["player", "team"]
+ImageKind = Literal["player", "team", "gallery"]
 
 # Incoming transformations run once at upload, so delivery never pays for them.
 _INCOMING = {
     "player": [{"width": 512, "height": 512, "crop": "fill", "gravity": "face"}],
     "team": [{"width": 512, "height": 512, "crop": "limit"}],
+    "gallery": [{"width": 2560, "crop": "limit"}],
 }
-_SUBFOLDER = {"player": "players", "team": "teams"}
+_SUBFOLDER = {"player": "players", "team": "teams", "gallery": "gallery"}
 
 
 @dataclass(frozen=True)
@@ -38,8 +39,8 @@ def default_key(folder: str, kind: ImageKind) -> str:
     return f"{folder}/defaults/{kind}"
 
 
-# public_id values this app creates: "<folder>/players/<32 hex>" or "<folder>/teams/<32 hex>".
-_OWNED_KEY = re.compile(r"^(?P<folder>.+)/(?P<kind>players|teams)/(?P<id>[0-9a-f]{32})$")
+# public_id values this app creates: "<folder>/players|teams|gallery/<32 hex>".
+_OWNED_KEY = re.compile(r"^(?P<folder>.+)/(?P<kind>players|teams|gallery)/(?P<id>[0-9a-f]{32})$")
 
 
 def is_owned_image_key(key: object, folder: str) -> bool:
@@ -103,6 +104,28 @@ class CloudinaryStorage:
 
     def default_url(self, kind: ImageKind) -> str:
         return self._delivery_url(default_key(self.folder, kind))
+
+    def gallery_variants(self, public_id: str) -> dict[str, str]:
+        """Small delivery URLs derived from an upload this app owns. The stored URL stays full size."""
+        return {
+            "thumbnail_url": self._transformed(public_id, [{"width": 640, "crop": "limit"}]),
+            "placeholder_url": self._transformed(
+                public_id,
+                [{"width": 40, "crop": "limit", "effect": "blur:1000", "quality": 30}],
+            ),
+        }
+
+    @staticmethod
+    def _transformed(public_id: str, transformation: list) -> str:
+        from cloudinary.utils import cloudinary_url
+
+        return cloudinary_url(
+            public_id,
+            secure=True,
+            fetch_format="auto",
+            quality="auto",
+            transformation=transformation,
+        )[0]
 
 
 @lru_cache()

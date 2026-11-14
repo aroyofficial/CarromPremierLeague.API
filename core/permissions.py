@@ -42,6 +42,7 @@ class Role:
 SECTIONS: tuple[Section, ...] = (
     Section("league", "League setup", "Seasons, teams, players and who plays where.", 10),
     Section("matchday", "Match day", "Fixtures, live scoring and competition rules.", 20),
+    Section("media", "Media", "Season photos shown on the public gallery.", 25),
     Section("administration", "Administration", "Who can sign in and what they can do.", 30),
 )
 
@@ -52,6 +53,7 @@ AREAS: tuple[Area, ...] = (
     Area("countries", "league", "Countries", "Nationalities players can pick from.", "Location", 40),
     Area("rosters", "league", "Rosters", "Which players play for which team each season.", "List", 50),
     Area("matches", "matchday", "Matches", "Fixtures, tosses, live play and scorecards.", "Trophy", 60),
+    Area("gallery", "media", "Gallery", "Season photos.", "Picture", 55),
     Area("settings", "matchday", "Settings", "Match clock and Queen rules.", "Setting", 70),
     Area("admins", "administration", "Admin users", "Accounts that can sign in to this console.", "UserFilled", 80),
     Area("permissions", "administration", "Permissions", "Granting and removing permissions.", "Lock", 90),
@@ -84,6 +86,24 @@ CATALOG: tuple[Permission, ...] = (
     Permission("matches.reset", "matches", "Reset matches", "Return a started or played match to scheduled.", 540, "matches.update"),
     Permission("matches.delete", "matches", "Delete matches", "Remove a fixture.", 550, "matches.update"),
     Permission("settings.update", "settings", "Change competition settings", "Set the match clock and the Queen rules.", 610),
+    Permission("gallery.create", "gallery", "Add gallery photos", "Upload a photo or save a public image link as a draft.", 650),
+    Permission("gallery.update", "gallery", "Edit gallery photos", "Change captions, seasons, order and covers.", 660),
+    Permission(
+        "gallery.publish",
+        "gallery",
+        "Publish gallery photos",
+        "Make a draft photo visible on the public gallery.",
+        670,
+        "gallery.update",
+    ),
+    Permission(
+        "gallery.delete",
+        "gallery",
+        "Delete gallery photos",
+        "Remove a photo from the gallery.",
+        680,
+        "gallery.update",
+    ),
     Permission("admins.view", "admins", "View admin users", "See the list of admin users and what each can do.", 710),
     Permission("admins.create", "admins", "Create admin users", "Add a new admin user.", 720),
     Permission(
@@ -140,6 +160,13 @@ ROLES: tuple[Role, ...] = (
         "Adds admin users and keeps their accounts in order.",
         40,
         ("admins.view", "admins.create", "admins.update"),
+    ),
+    Role(
+        "gallery_curator",
+        "Gallery curator",
+        "Adds season photos, edits them and publishes the ones that should be public.",
+        50,
+        ("gallery.create", "gallery.update", "gallery.publish", "gallery.delete"),
     ),
 )
 

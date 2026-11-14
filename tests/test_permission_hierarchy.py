@@ -53,6 +53,9 @@ class HierarchyCatalogTests(unittest.TestCase):
 
     def test_expected_links(self):
         self.assertEqual(parent_of("matches.scorecard"), "matches.update")
+        self.assertEqual(parent_of("gallery.publish"), "gallery.update")
+        self.assertEqual(parent_of("gallery.delete"), "gallery.update")
+        self.assertEqual(children_of("gallery.update"), ["gallery.publish", "gallery.delete"])
         self.assertEqual(parent_of("admins.delete"), "admins.view")
         self.assertIsNone(parent_of("admins.create"))
         self.assertIsNone(parent_of(MANAGE_PERMISSIONS))
