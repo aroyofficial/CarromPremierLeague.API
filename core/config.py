@@ -65,6 +65,10 @@ class Settings:
         self.PUBLIC_WEB_URL: str = (
             self._get_optional_env("CPL_PUBLIC_WEB_URL") or "https://aroyofficial.github.io/CarromPremierLeague.Web"
         ).rstrip("/")
+        self.MAIL_LOGO_URL: str = self._get_optional_env("CPL_MAIL_LOGO_URL") or (
+            "https://lh3.googleusercontent.com/pw/AP1GczM2El9t3olXj05BnAQkgoq03v67a1z09zyEZ-VkUuFSbfsuif4Xv91JwTfaoYNb6"
+            "-HvcFLk-j3KN0-9P95DHNissycutEAaFaTJRaO1CQUWcIAUagu_dwsyWesRAVIIL09ZSmPcbpJ_pgOH5t496tSaOQ=w192-h192-s-no-gm"
+        )
 
     @staticmethod
     def _get_optional_env(key: str) -> str | None:

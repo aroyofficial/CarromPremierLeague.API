@@ -1,14 +1,14 @@
 """HTML mail for admin accounts.
 
-Templates keep {{placeholder}} names. Values are escaped before they are
-inserted, except the prebuilt details table. CSS animation is included for
-clients that keep a style block; the layout still reads when that is removed.
+Every message shares one table-based layout with inline styles, so it reads the
+same in Gmail, Outlook and Apple Mail. Outfit and Poppins load where the client
+allows web fonts; the stacks fall back to Segoe UI, Roboto and Arial elsewhere.
+Every value is escaped before it is placed in the HTML.
 """
 
 import base64
 import html
 import logging
-import re
 import smtplib
 import ssl
 import time
@@ -23,9 +23,6 @@ from core.config import settings
 
 logger = logging.getLogger("cpl.mail")
 
-_PLACEHOLDER = re.compile(r"\{\{\s*([a-z0-9_]+)\s*\}\}")
-_SAFE = {"details"}
-
 
 class MailError(Exception):
     pass
@@ -39,118 +36,281 @@ class OutboundMail:
     text: str
 
 
-def fill(template: str, values: dict) -> str:
-    def replace(match: re.Match) -> str:
-        key = match.group(1)
-        raw = "" if values.get(key) is None else str(values.get(key))
-        return raw if key in _SAFE else html.escape(raw)
+_BODY_FONT = "'Poppins','Segoe UI',Roboto,Helvetica,Arial,sans-serif"
+_DISPLAY_FONT = "'Outfit','Poppins','Segoe UI',Roboto,Helvetica,Arial,sans-serif"
+_MONO_FONT = "'JetBrains Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace"
 
-    return _PLACEHOLDER.sub(replace, template)
+_NAVY = "#0b1426"
+_NAVY_SOFT = "#18294d"
+_GOLD = "#f5b82e"
+_GOLD_SOFT = "#fff6dc"
+_INK = "#0f172a"
+_INK_MUTED = "#475569"
+_INK_FAINT = "#94a3b8"
+_LINE = "#e2e8f0"
+_PAPER = "#f8fafc"
+
+_TONES = {
+    "gold": ("#8a5a00", _GOLD_SOFT),
+    "green": ("#17643a", "#e8f7ee"),
+    "navy": (_NAVY_SOFT, "#e8ecf5"),
+}
+
+_CODE_MINUTES = 10
 
 
-def _details(rows: list[tuple[str, str]]) -> str:
+def _e(value) -> str:
+    return html.escape("" if value is None else str(value))
+
+
+def _eyebrow(label: str, tone: str) -> str:
+    color, background = _TONES[tone]
+    return (
+        f'<span style="display:inline-block;padding:5px 12px;border-radius:999px;background:{background};'
+        f'color:{color};font-family:{_BODY_FONT};font-size:11px;font-weight:600;letter-spacing:0.12em;'
+        f'text-transform:uppercase;">{_e(label)}</span>'
+    )
+
+
+def _paragraph(text: str, *, size: int = 15, color: str = _INK_MUTED, margin: str = "0 0 16px") -> str:
+    if not text:
+        return ""
+    return (
+        f'<p style="margin:{margin};font-family:{_BODY_FONT};font-size:{size}px;line-height:1.65;color:{color};">'
+        f"{_e(text)}</p>"
+    )
+
+
+def _code_block(code: str) -> str:
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 22px;">'
+        f'<tr><td align="center" style="padding:22px 12px 18px;border-radius:16px;background:{_GOLD_SOFT};'
+        f'border:1px solid #f6dc9b;">'
+        f'<div style="font-family:{_BODY_FONT};font-size:11px;font-weight:600;letter-spacing:0.14em;'
+        f'text-transform:uppercase;color:#8a5a00;">Your code</div>'
+        f'<div class="cpl-code" style="margin:8px 0 6px;font-family:{_DISPLAY_FONT};font-size:38px;'
+        f'font-weight:700;letter-spacing:0.32em;padding-left:0.32em;color:{_NAVY};">{_e(code)}</div>'
+        f'<div style="font-family:{_BODY_FONT};font-size:13px;color:{_INK_MUTED};">'
+        f"Expires in {_CODE_MINUTES} minutes</div>"
+        "</td></tr></table>"
+    )
+
+
+def _details(rows: list[tuple[str, str, bool]]) -> str:
     cells = []
-    for label, value in rows:
+    for label, value, secret in rows:
         if not value:
             continue
+        if secret:
+            shown = (
+                f'<span style="display:inline-block;padding:6px 10px;border-radius:8px;border:1px dashed #d4a72c;'
+                f'background:#ffffff;font-family:{_MONO_FONT};font-size:15px;font-weight:600;color:{_NAVY};'
+                f'letter-spacing:0.04em;word-break:break-all;">{_e(value)}</span>'
+            )
+        else:
+            shown = (
+                f'<span style="font-family:{_BODY_FONT};font-size:15px;font-weight:600;color:{_INK};'
+                f'word-break:break-word;">{_e(value)}</span>'
+            )
+        top = "" if not cells else f"border-top:1px solid {_LINE};"
         cells.append(
             "<tr>"
-            f"<td style=\"padding:8px 0;color:#64748b;font-size:13px;width:140px;\">{html.escape(label)}</td>"
-            f"<td style=\"padding:8px 0;color:#0f172a;font-size:15px;font-weight:700;\">{html.escape(value)}</td>"
+            f'<td class="cpl-label" style="{top}padding:12px 14px 12px 0;width:40%;vertical-align:top;font-family:{_BODY_FONT};'
+            f'font-size:13px;color:{_INK_MUTED};">{_e(label)}</td>'
+            f'<td style="{top}padding:12px 0;vertical-align:top;">{shown}</td>'
             "</tr>"
         )
     if not cells:
         return ""
     return (
-        "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" "
-        "style=\"margin:18px 0;border-top:1px solid #e7e1d4;border-bottom:1px solid #e7e1d4;\">"
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:4px 0 22px;">'
+        f'<tr><td style="padding:4px 18px;border-radius:14px;background:{_PAPER};border:1px solid {_LINE};">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + "".join(cells)
+        + "</table></td></tr></table>"
+    )
+
+
+def _steps(items: list[tuple[str, str]]) -> str:
+    rows = []
+    for index, (title, text) in enumerate(items, start=1):
+        rows.append(
+            "<tr>"
+            '<td style="width:40px;padding:0 0 14px;vertical-align:top;">'
+            f'<div style="width:28px;height:28px;border-radius:50%;background:{_NAVY};color:{_GOLD};'
+            f'font-family:{_DISPLAY_FONT};font-size:14px;font-weight:700;line-height:28px;text-align:center;">{index}</div>'
+            "</td>"
+            '<td style="padding:2px 0 14px;vertical-align:top;">'
+            f'<div style="font-family:{_BODY_FONT};font-size:15px;font-weight:600;color:{_INK};">{_e(title)}</div>'
+            f'<div style="font-family:{_BODY_FONT};font-size:13px;line-height:1.55;color:{_INK_MUTED};">{_e(text)}</div>'
+            "</td>"
+            "</tr>"
+        )
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 10px;">'
+        + "".join(rows)
         + "</table>"
     )
 
 
-_LAYOUT = """<!DOCTYPE html>
-<html lang="en">
+def _callout(title: str, text: str, tone: str = "warn") -> str:
+    border, background, heading = {
+        "warn": ("#f4c7c3", "#fff5f4", "#b42318"),
+        "quiet": (_LINE, _PAPER, _INK),
+    }[tone]
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:22px 0 0;">'
+        f'<tr><td style="padding:14px 16px;border-radius:12px;background:{background};border:1px solid {border};">'
+        f'<div style="font-family:{_BODY_FONT};font-size:14px;font-weight:600;color:{heading};">{_e(title)}</div>'
+        f'<div style="margin-top:4px;font-family:{_BODY_FONT};font-size:13px;line-height:1.55;color:{_INK_MUTED};">'
+        f"{_e(text)}</div>"
+        "</td></tr></table>"
+    )
+
+
+def _button(label: str, url: str) -> str:
+    return (
+        '<table role="presentation" cellpadding="0" cellspacing="0" class="cpl-btn" style="margin:6px 0 0;">'
+        f'<tr><td align="center" style="border-radius:12px;background:{_NAVY};">'
+        f'<a href="{_e(url)}" target="_blank" style="display:inline-block;padding:14px 26px;border-radius:12px;'
+        f'font-family:{_BODY_FONT};font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;">'
+        f'{_e(label)}&nbsp;&nbsp;<span style="color:{_GOLD};">&rarr;</span></a>'
+        "</td></tr></table>"
+    )
+
+
+def _page(*, subject: str, preheader: str, body: str, recipient: str, username: str) -> str:
+    year = datetime.now(timezone.utc).year
+    site = settings.PUBLIC_WEB_URL
+    logo = settings.MAIL_LOGO_URL
+    padding = "&#8204;&nbsp;" * 60
+    return f"""<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{subject}}</title>
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>{_e(subject)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700;800&family=Poppins:wght@400;500;600&family=JetBrains+Mono:wght@600&display=swap" rel="stylesheet">
+<!--[if mso]><style>body,table,td,div,p,a,span,h1{{font-family:'Segoe UI',Arial,sans-serif !important;}}</style><![endif]-->
 <style>
-  @keyframes cpl-rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
-  @keyframes cpl-shimmer { 0% { background-position: 0% 50%; } 100% { background-position: 220% 50%; } }
-  @keyframes cpl-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
-  .cpl-card { animation: cpl-rise 0.7s ease both; }
-  .cpl-bar { background-size: 220% 100%; animation: cpl-shimmer 3.6s linear infinite; }
-  .cpl-badge { animation: cpl-pulse 2.8s ease-in-out infinite; }
-  @media (prefers-reduced-motion: reduce) {
-    .cpl-card, .cpl-bar, .cpl-badge { animation: none; }
-  }
+  body {{ margin:0; padding:0; -webkit-text-size-adjust:100%; }}
+  a {{ color:{_NAVY_SOFT}; }}
+  @media (max-width: 600px) {{
+    .cpl-shell {{ padding:16px 10px !important; }}
+    .cpl-pad {{ padding-left:22px !important; padding-right:22px !important; }}
+    .cpl-h1 {{ font-size:24px !important; }}
+    .cpl-code {{ font-size:32px !important; letter-spacing:0.24em !important; padding-left:0.24em !important; }}
+    .cpl-label {{ width:38% !important; }}
+    .cpl-btn, .cpl-btn tbody, .cpl-btn tr, .cpl-btn td, .cpl-btn a {{ display:block !important; width:100% !important; text-align:center !important; box-sizing:border-box; }}
+  }}
 </style>
 </head>
-<body style="margin:0;padding:0;background:#f6f1e7;font-family:Georgia, 'Segoe UI', sans-serif;color:#0f172a;">
-  <div style="display:none;max-height:0;overflow:hidden;">{{preheader}}</div>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f1e7;padding:28px 12px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" class="cpl-card" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:22px;overflow:hidden;border:1px solid #eadfca;box-shadow:0 18px 40px rgba(15,23,42,0.08);">
-          <tr>
-            <td class="cpl-bar" style="height:8px;background-image:linear-gradient(90deg,#f5b82e,#fff1c2,#f5b82e);background-color:#f5b82e;"></td>
-          </tr>
-          <tr>
-            <td style="padding:28px 28px 8px;background:#0b1426;">
-              <div class="cpl-badge" style="width:54px;height:54px;border-radius:16px;background:#f5b82e;color:#0b1426;font-weight:800;font-size:16px;line-height:54px;text-align:center;font-family:'Segoe UI',sans-serif;">CPL</div>
-              <p style="margin:16px 0 0;color:#f5b82e;font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-family:'Segoe UI',sans-serif;">{{league_name}}</p>
-              <h1 style="margin:6px 0 0;color:#ffffff;font-size:26px;line-height:1.25;font-weight:800;">{{headline}}</h1>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:24px 28px 8px;font-size:16px;line-height:1.55;color:#334155;">
-              <p style="margin:0 0 12px;">Hello {{given_name}},</p>
-              <p style="margin:0;">{{intro}}</p>
-              {{details}}
-              <p style="margin:0 0 18px;">{{note}}</p>
-              <a href="{{login_url}}" style="display:inline-block;background:#0b1426;color:#ffffff;text-decoration:none;font-family:'Segoe UI',sans-serif;font-weight:700;font-size:15px;padding:12px 18px;border-radius:999px;">{{action}}</a>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:8px 28px 28px;color:#94a3b8;font-size:12px;line-height:1.5;font-family:'Segoe UI',sans-serif;">
-              This message was sent to {{email}} for the {{username}} admin account. If you were not expecting it, you can ignore it.
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
+<body style="margin:0;padding:0;background:#eef1f6;">
+<div style="display:none;max-height:0;max-width:0;overflow:hidden;opacity:0;mso-hide:all;">{_e(preheader)}{padding}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef1f6;">
+  <tr>
+    <td align="center" class="cpl-shell" style="padding:32px 12px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:580px;">
+        <tr>
+          <td class="cpl-pad" style="padding:22px 36px;border-radius:20px 20px 0 0;background:{_NAVY};border-bottom:4px solid {_GOLD};">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="width:56px;">
+                  <img src="{_e(logo)}" width="52" height="52" alt="CPL" style="display:block;width:52px;height:52px;border-radius:50%;border:2px solid {_GOLD};background:#ffffff;">
+                </td>
+                <td style="padding-left:14px;">
+                  <div style="font-family:{_DISPLAY_FONT};font-size:18px;font-weight:700;color:#ffffff;line-height:1.2;">Carrom Premier League</div>
+                  <div style="margin-top:3px;font-family:{_BODY_FONT};font-size:11px;font-weight:600;letter-spacing:0.16em;text-transform:uppercase;color:{_GOLD};">Admin console</div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td class="cpl-pad" style="padding:34px 36px 30px;background:#ffffff;">
+            {body}
+          </td>
+        </tr>
+        <tr>
+          <td class="cpl-pad" style="padding:18px 36px 22px;background:#ffffff;border-top:1px solid {_LINE};border-radius:0 0 20px 20px;">
+            <p style="margin:0;font-family:{_BODY_FONT};font-size:12px;line-height:1.6;color:{_INK_FAINT};">
+              Sent to {_e(recipient)} for the <strong style="color:{_INK_MUTED};font-weight:600;">{_e(username)}</strong> admin account.
+              If you were not expecting this email, you can ignore it.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="padding:20px 12px 0;">
+            <p style="margin:0;font-family:{_BODY_FONT};font-size:12px;line-height:1.6;color:{_INK_FAINT};">
+              &copy; {year} Carrom Premier League &middot; <a href="{_e(site)}" target="_blank" style="color:{_INK_MUTED};text-decoration:underline;">Visit the league site</a>
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
 </body>
 </html>
 """
 
 
+def _heading(eyebrow: str, tone: str, headline: str) -> str:
+    return (
+        f"{_eyebrow(eyebrow, tone)}"
+        f'<h1 class="cpl-h1" style="margin:14px 0 18px;font-family:{_DISPLAY_FONT};font-size:28px;line-height:1.25;'
+        f'font-weight:700;color:{_INK};">{_e(headline)}</h1>'
+    )
+
+
+@dataclass(frozen=True)
+class _CodeCopy:
+    subject: str
+    eyebrow: str
+    headline: str
+    intro: str
+    where: str
+
+
 _CODE_COPY = {
-    "email_change": (
+    "email_change": _CodeCopy(
         "Confirm your admin email",
+        "Email change",
         "Confirm this email address",
-        "Enter this code to save the new email address on the admin account. It expires in 10 minutes.",
+        "Enter this code to save the new email address on the admin account.",
+        "Enter it in My profile, where you changed the email.",
     ),
-    "password_reset": (
+    "password_reset": _CodeCopy(
         "Reset your admin password",
+        "Password reset",
         "Reset your password",
-        "Enter this code on the sign-in page with the username for this account. It expires in 10 minutes.",
+        "Enter this code on the sign-in page with the username for this account.",
+        "Then choose a new password. The code works once.",
     ),
-    "password_change": (
+    "password_change": _CodeCopy(
         "Confirm your new admin password",
-        "Confirm the password change",
-        "Enter this code to confirm the new password for this admin account. It expires in 10 minutes.",
+        "Password change",
+        "Confirm it's you",
+        "Enter this code to confirm the new password for this admin account.",
+        "Enter it in My profile, then choose the new password.",
     ),
-    "activation": (
+    "activation": _CodeCopy(
         "Verify your admin email",
-        "Verify your email to activate the account",
-        "Enter this code to verify this email address. After you set your own password, the account is activated. It expires in 10 minutes.",
+        "Account activation",
+        "Verify your email",
+        "Enter this code to verify this email address. After you set your own password, the account is activated.",
+        "Enter it on the activation screen in the admin console.",
     ),
-    "login": (
+    "login": _CodeCopy(
         "Your admin sign-in code",
+        "Sign-in code",
         "Finish signing in",
-        "Enter this code on the sign-in page to finish signing in. It expires in 10 minutes.",
+        "Enter this code on the sign-in page to finish signing in.",
+        "It only works for the sign-in you just started.",
     ),
 }
 
@@ -163,6 +323,22 @@ def _contact(phone_code: str | None, phone_number: str | None) -> str:
     return " ".join(part for part in (phone_code, phone_number) if part)
 
 
+def _text(given_name: str, paragraphs: list[str], rows: list[tuple[str, str]], link: str = "") -> str:
+    lines = [f"Hello {given_name},", ""]
+    for paragraph in paragraphs:
+        if paragraph:
+            lines += [paragraph, ""]
+    for label, value in rows:
+        if value:
+            lines.append(f"{label}: {value}")
+    if rows:
+        lines.append("")
+    if link:
+        lines += [link, ""]
+    lines += ["Carrom Premier League", ""]
+    return "\n".join(lines)
+
+
 class Mailer:
     configured = True
 
@@ -170,102 +346,125 @@ class Mailer:
         raise NotImplementedError
 
     def welcome(self, admin, password: str) -> OutboundMail:
+        given = _given_name(getattr(admin, "first_name", None), admin.username)
         contact = _contact(admin.phone_code, admin.phone_number)
-        values = self._base(admin, "Your admin account is ready")
-        values.update({
-            "headline": "Your admin account is ready",
-            "preheader": "A temporary password is waiting. Sign in and change it to activate the account.",
-            "intro": "An administrator created this account. The password below was generated by the system. It is a default password, not one you chose.",
-            "details": _details([
+        login_url = self._login_url()
+        subject = "Your admin account is ready"
+        intro = (
+            "An administrator created a CPL admin account for you. The password below is a default password "
+            "generated by the system, not one you chose."
+        )
+        body = (
+            _heading("Welcome aboard", "gold", "Your admin account is ready")
+            + _paragraph(f"Hello {given},", color=_INK, margin="0 0 10px")
+            + _paragraph(intro)
+            + _details([
+                ("Username", admin.username, False),
+                ("Email", admin.email or "", False),
+                ("Contact number", contact, False),
+                ("Temporary password", password, True),
+            ])
+            + f'<div style="margin:0 0 12px;font-family:{_DISPLAY_FONT};font-size:16px;font-weight:700;color:{_INK};">'
+            "Three steps to switch it on</div>"
+            + _steps([
+                ("Sign in", "Use the username and temporary password above."),
+                ("Verify your email", f"We email a 6-digit code. It expires in {_CODE_MINUTES} minutes."),
+                ("Choose your own password", "The account turns on as soon as it is saved."),
+            ])
+            + _button("Sign in to activate", login_url)
+            + _callout(
+                "Keep this email private",
+                "Anyone with the temporary password can start the activation. It stops working once you change it.",
+                "quiet",
+            )
+        )
+        text = _text(
+            given,
+            [
+                "Your CPL admin account is ready. This is the default password generated by the system.",
+                "Sign in and change it. The account stays off until you do.",
+            ],
+            [
                 ("Username", admin.username),
                 ("Email", admin.email or ""),
                 ("Contact number", contact),
                 ("Temporary password", password),
-            ]),
-            "note": "The account stays switched off until you sign in and change this password. After you change it, the account is activated.",
-            "action": "Sign in and change it",
-        })
-        text = (
-            f"Hello {values['given_name']},\n\n"
-            "This is the default password generated by the system. "
-            "Sign in and change it. The account stays off until you do.\n\n"
-            f"Username: {admin.username}\n"
-            f"Email: {admin.email}\n"
-            f"Contact number: {contact}\n"
-            f"Temporary password: {password}\n\n"
-            f"Sign in: {values['login_url']}\n"
+            ],
+            f"Sign in: {login_url}",
         )
-        return self._deliver(admin.email, values["subject"], values, text)
+        return self._deliver(admin.email, subject, "A temporary password is waiting. Sign in and change it to activate the account.", body, text, admin.email, admin.username)
 
     def password_changed(self, admin, activated: bool, via: str = "profile") -> OutboundMail:
-        values = self._base(admin, "Your admin password was changed")
+        given = _given_name(getattr(admin, "first_name", None), admin.username)
+        login_url = self._login_url()
         changed_at = getattr(admin, "password_changed_at", None) or datetime.now(timezone.utc)
         when = f"{changed_at.strftime('%d %b %Y, %H:%M')} UTC"
         how = "Reset with an email code from the sign-in page" if via == "reset" else "Changed from My profile after an email code"
+        subject = "Your admin password was changed"
+        rows = [("Username", admin.username), ("When", when), ("How", how)]
         if activated:
-            values.update({
-                "headline": "Your account is now active",
-                "preheader": "The temporary password has been replaced and the account can sign in.",
-                "intro": "You replaced the default password generated by the system. This account is now activated.",
-                "note": "If you did not make this change, reset the password from the sign-in page.",
-            })
+            eyebrow, headline = "Account active", "Your account is now active"
+            intro = "You replaced the default password generated by the system. This account is now activated."
+            note = "Sign in with the new password whenever you are ready."
+            preheader = "The temporary password has been replaced and the account can sign in."
+            action = "Sign in"
         else:
-            values.update({
-                "headline": "Your password was changed",
-                "preheader": "The password for your admin account was just changed.",
-                "intro": "The password for this admin account was changed. Existing sign-ins have been signed out.",
-                "note": "If you did not expect this, reset the password from the sign-in page.",
-            })
-        values["details"] = _details([
-            ("Username", admin.username),
-            ("When", when),
-            ("How", how),
-        ])
-        values["action"] = "Open the sign-in page"
-        text = (
-            f"Hello {values['given_name']},\n\n{values['intro']}\n\n"
-            f"Username: {admin.username}\nWhen: {when}\nHow: {how}\n\n"
-            f"{values['note']}\n{values['login_url']}\n"
+            eyebrow, headline = "Security notice", "Your password was changed"
+            intro = "The password for this admin account was just changed."
+            note = "Every device that was signed in has been signed out. Sign in again with the new password."
+            preheader = "The password for your admin account was just changed."
+            action = "Open the sign-in page"
+        body = (
+            _heading(eyebrow, "green", headline)
+            + _paragraph(f"Hello {given},", color=_INK, margin="0 0 10px")
+            + _paragraph(intro)
+            + _details([(label, value, False) for label, value in rows])
+            + _paragraph(note)
+            + _button(action, login_url)
+            + _callout(
+                "Wasn't you?",
+                "Reset the password from the sign-in page right away with Forgot password, "
+                "then tell another admin so they can check the account.",
+            )
         )
-        return self._deliver(admin.email, values["subject"], values, text)
+        text = _text(
+            given,
+            [intro, note, "If you did not make this change, reset the password from the sign-in page."],
+            rows,
+            login_url,
+        )
+        return self._deliver(admin.email, subject, preheader, body, text, admin.email or "", admin.username)
 
     def code(self, admin, purpose: str, code: str, destination: str) -> OutboundMail:
-        subject, headline, intro = _CODE_COPY.get(purpose, _CODE_COPY["password_reset"])
-        preheader = f"Your code is {code}."
-        values = self._base(admin, subject)
-        values.update({
-            "email": destination,
-            "headline": headline,
-            "preheader": preheader,
-            "intro": intro,
-            "details": _details([("Username", admin.username), ("Code", code)]),
-            "note": "If you did not ask for this code, you can ignore this message.",
-            "action": "Open the sign-in page",
-        })
-        text = (
-            f"Hello {values['given_name']},\n\n{intro}\n\n"
-            f"Username: {admin.username}\nCode: {code}\n\n{values['login_url']}\n"
+        copy = _CODE_COPY.get(purpose, _CODE_COPY["password_reset"])
+        given = _given_name(getattr(admin, "first_name", None), admin.username)
+        body = (
+            _heading(copy.eyebrow, "gold", copy.headline)
+            + _paragraph(f"Hello {given},", color=_INK, margin="0 0 10px")
+            + _paragraph(copy.intro)
+            + _code_block(code)
+            + _paragraph(copy.where, size=14)
+            + _callout(
+                "Never share this code",
+                "CPL admins will never ask you for it. If you did not ask for this code, you can ignore this email; "
+                "nothing changes without it.",
+                "quiet",
+            )
         )
-        return self._deliver(destination, subject, values, text)
+        text = _text(
+            given,
+            [copy.intro, f"It expires in {_CODE_MINUTES} minutes. {copy.where}"],
+            [("Username", admin.username), ("Code", code)],
+        )
+        return self._deliver(destination, copy.subject, f"Your code is {code}. It expires in {_CODE_MINUTES} minutes.", body, text, destination, admin.username)
 
-    def _base(self, admin, subject: str) -> dict:
-        return {
-            "subject": subject,
-            "league_name": "Carrom Premier League",
-            "given_name": _given_name(getattr(admin, "first_name", None), admin.username),
-            "username": admin.username,
-            "email": admin.email or "",
-            "login_url": f"{settings.PUBLIC_WEB_URL}/login",
-            "details": "",
-            "note": "",
-            "action": "Open the sign-in page",
-            "preheader": subject,
-            "headline": subject,
-            "intro": "",
-        }
+    @staticmethod
+    def _login_url() -> str:
+        return f"{settings.PUBLIC_WEB_URL}/login"
 
-    def _deliver(self, to: str, subject: str, values: dict, text: str) -> OutboundMail:
-        mail = OutboundMail(to=to, subject=subject, html=fill(_LAYOUT, values), text=text)
+    def _deliver(self, to: str, subject: str, preheader: str, body: str, text: str, recipient: str, username: str) -> OutboundMail:
+        page = _page(subject=subject, preheader=preheader, body=body, recipient=recipient, username=username)
+        mail = OutboundMail(to=to, subject=subject, html=page, text=text)
         self.send(mail)
         return mail
 
