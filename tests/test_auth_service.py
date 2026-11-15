@@ -344,6 +344,76 @@ class AuthServiceTests(unittest.TestCase):
         self.service.request_password_reset("missing-admin")
         self.assertEqual(self.service.mailer.sent, [])
 
+    def test_the_same_device_can_sign_in_again(self):
+        first = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-one", device_label="Chrome"
+        ))
+        again = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-one", device_label="Chrome"
+        ))
+        self.assertFalse(again.pending)
+        self.assertEqual(self.service.current_admin(first.access_token).id, self.primary.id)
+        self.assertEqual(self.service.current_admin(again.access_token).id, self.primary.id)
+
+    def test_another_device_waits_until_the_current_session_approves(self):
+        first = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-one", device_label="Chrome on Windows"
+        ))
+        second = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-two", device_label="Firefox on Windows"
+        ))
+        self.assertTrue(second.pending)
+        self.assertEqual(second.access_token, "")
+        self.assertEqual(self.service.current_admin(first.access_token).id, self.primary.id)
+        notice = self.service.pending_login(self.primary)
+        self.assertEqual(notice.device_label, "Firefox on Windows")
+        waiting = self.service.claim_login(second.request_id)
+        self.assertTrue(waiting.pending)
+        self.service.approve_login(self.primary, notice.id)
+        claimed = self.service.claim_login(second.request_id)
+        self.assertTrue(claimed.access_token)
+        with self.assertRaises(HTTPException):
+            self.service.current_admin(first.access_token)
+        self.assertEqual(self.service.current_admin(claimed.access_token).id, self.primary.id)
+
+    def test_declining_a_sign_in_keeps_the_current_session(self):
+        first = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-one", device_label="Chrome"
+        ))
+        second = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-two", device_label="Firefox"
+        ))
+        self.service.deny_login(self.primary, second.request_id)
+        with self.assertRaises(HTTPException) as raised:
+            self.service.claim_login(second.request_id)
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(self.service.current_admin(first.access_token).id, self.primary.id)
+
+    def test_the_old_device_cannot_clear_the_approved_session(self):
+        self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-one", device_label="Chrome"
+        ))
+        second = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-two", device_label="Firefox"
+        ))
+        self.service.approve_login(self.primary, second.request_id)
+        self.service.logout(self.primary, "device-one")
+        third = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-three", device_label="Edge"
+        ))
+        self.assertTrue(third.pending)
+
+    def test_logout_lets_another_device_sign_in(self):
+        self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-one", device_label="Chrome"
+        ))
+        self.service.logout(self.primary)
+        other = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-two", device_label="Firefox"
+        ))
+        self.assertFalse(other.pending)
+        self.assertTrue(other.access_token)
+
     def test_second_bootstrap_is_rejected(self):
         with self.assertRaises(HTTPException) as raised:
             self.service.bootstrap_admin(

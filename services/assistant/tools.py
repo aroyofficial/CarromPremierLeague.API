@@ -438,7 +438,7 @@ ADMIN_WRITES: list[Tool] = [
     _write(
         "update_competition_settings",
         "Update competition rules",
-        "Replace the competition rules. assistant_enabled turns the Striker chatbot on or off. Read get_competition_settings first and send every field.",
+        "Replace the competition rules. assistant_public_enabled and assistant_admin_enabled turn the Striker chatbot on or off for the public site and for the admin console. Read get_competition_settings first and send every field.",
         "PUT",
         "/settings",
         ("settings.update",),

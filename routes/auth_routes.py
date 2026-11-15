@@ -30,7 +30,10 @@ from schemas.auth_schema import (
     AdminUpdateRequest,
     EmailCodeRequest,
     ForgotPasswordRequest,
+    LoginApproval,
     LoginRequest,
+    LogoutRequest,
+    PendingLogin,
     ResetPasswordRequest,
     PermissionAreaNode,
     PermissionNode,
@@ -42,6 +45,7 @@ from schemas.auth_schema import (
 )
 from services.admin_codes import SqlCodeStore
 from services.auth_service import AuthService
+from services.admin_sessions import SqlSessionStore
 from services.mailer import SmtpMailer
 from services.media_service import MediaService
 
@@ -51,7 +55,13 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def get_service(db=Depends(get_db)) -> AuthService:
-    return AuthService(AdminRepository(db), PermissionRepository(db), mailer=SmtpMailer(), codes=SqlCodeStore(db))
+    return AuthService(
+        AdminRepository(db),
+        PermissionRepository(db),
+        mailer=SmtpMailer(),
+        codes=SqlCodeStore(db),
+        sessions=SqlSessionStore(db),
+    )
 
 
 def get_admin_media(
@@ -70,6 +80,10 @@ def _can_edit_admin(admin_id: int, current: AdminResponse) -> None:
 def _pending_password_allowed(request: Request, admin: AdminResponse) -> bool:
     path = request.url.path.rstrip("/") or "/"
     if request.method == "GET" and path == "/auth/me":
+        return True
+    if path in {"/auth/login-request", "/auth/logout"}:
+        return True
+    if path.startswith("/auth/login-request/"):
         return True
     return request.method == "PATCH" and path == f"/admins/{admin.id}"
 
@@ -117,6 +131,58 @@ def login(request: LoginRequest, service: AuthService = Depends(get_service)):
         message="Login successful.",
         data=service.login(request),
     )
+
+
+@router.post("/auth/logout", response_model=ApiResponse[bool], summary="End this admin session")
+def logout(
+    body: LogoutRequest | None = None,
+    admin: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+):
+    service.logout(admin, body.device_id if body else None)
+    return ApiResponse(success=True, message="Logged out.", data=True)
+
+
+@router.post("/auth/refresh", response_model=ApiResponse[TokenResponse], summary="Reissue the token with current claims")
+def refresh_token(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    admin: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+):
+    return ApiResponse(success=True, message="Token refreshed.", data=service.refresh(admin, credentials.credentials))
+
+
+@router.get("/auth/login-request", response_model=ApiResponse[PendingLogin | None], summary="Sign-in waiting for this session")
+def pending_login(admin: AdminResponse = Depends(get_current_admin), service: AuthService = Depends(get_service)):
+    challenge = service.pending_login(admin)
+    data = None if challenge is None else PendingLogin(request_id=challenge.id, device_label=challenge.device_label)
+    return ApiResponse(success=True, message=None, data=data)
+
+
+@router.post("/auth/login-request/approve", response_model=ApiResponse[bool], summary="Approve a sign-in and log out here")
+def approve_login(
+    body: LoginApproval,
+    admin: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+):
+    service.approve_login(admin, body.request_id)
+    return ApiResponse(success=True, message="The other device can sign in now.", data=True)
+
+
+@router.post("/auth/login-request/deny", response_model=ApiResponse[bool], summary="Keep this session and refuse the other sign-in")
+def deny_login(
+    body: LoginApproval,
+    admin: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+):
+    service.deny_login(admin, body.request_id)
+    return ApiResponse(success=True, message="The other sign-in was declined.", data=True)
+
+
+@router.post("/auth/login-request/claim", response_model=ApiResponse[TokenResponse], summary="Collect a token after approval")
+def claim_login(body: LoginApproval, service: AuthService = Depends(get_service)):
+    data = service.claim_login(body.request_id)
+    return ApiResponse(success=True, message=None if data.pending else "Login successful.", data=data)
 
 
 @router.post(

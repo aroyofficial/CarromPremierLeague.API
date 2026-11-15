@@ -69,4 +69,25 @@ The tools do not query the database directly. Each tool maps to an existing endp
 
 The Render deploy workflow copies the repository secrets `GEMINI_API_KEY`, `GROQ_API_KEY` and `OPENROUTER_API_KEY` into those variables when they are set. `GET /assistant/status` reports the assistant as unavailable when no key is configured, a key is rejected, or every configured provider is out of credits. A short rate limit still counts as available. The public site and the admin console hide the widget in that case even when the settings switch is on.
 
-`tblSettings.AssistantEnabled` is the on/off switch (`assistant_enabled` on `GET` and `PUT /settings`). It defaults to on. When an admin turns it off, the public site and the admin console hide the widget, and the chat and confirm endpoints answer that Striker is turned off without calling a model or applying a pending change. If settings cannot be read, the assistant stays off.
+## Who can see Striker
+
+Striker has two switches in `tblSettings`, both on by default and both on `GET` and `PUT /settings`:
+
+| Column | Field | Controls |
+| --- | --- | --- |
+| `AssistantPublicEnabled` | `assistant_public_enabled` | The widget on the public site and `POST /assistant/public/chat` |
+| `AssistantAdminEnabled` | `assistant_admin_enabled` | The widget in the admin console, `POST /assistant/admin/chat` and `POST /assistant/admin/confirm` |
+
+When a switch is off, that audience loses the widget and its endpoints answer that Striker is turned off without calling a model or applying a pending change. If settings cannot be read, the assistant stays off.
+
+The old single `assistant_enabled` still works for older clients. A `PUT` that sends only `assistant_enabled` sets both switches, and a response reports it as on while either switch is on. `AssistantEnabled` is still written so an older API reading the same database keeps working. The migration copies the saved single value into both new columns once.
+
+### Per-admin access
+
+With the admin switch on, an admin also needs the `assistant.use` permission ("Use Striker", area "Striker assistant", role "Striker user"). A permission manager grants it from the Permissions screen like any other permission, and can only grant it while holding it. The migration gives `assistant.use` once to every admin who already holds `permissions.manage`; other admins get it when a manager grants it.
+
+The server checks the permission from the database on every admin chat and confirm request. A revoked admin is refused at once, whatever their token says.
+
+### The `ast` token claim
+
+Tokens carry `ast`, true when the admin held `assistant.use` at issue time. It is set at login and when a sign-in from another device is approved. The console reads it to decide what to show before the profile loads, and the server never trusts it. Granting or revoking access does not change the token version, so a held token can lag behind. When the console loads the profile and the claim disagrees with the permissions the server returned, it calls `POST /auth/refresh` once. That reissues the token with current claims and keeps the original expiry, so it cannot extend a session. The admin launcher shows when the admin switch is on, a provider can answer, and the signed-in admin holds `assistant.use`.

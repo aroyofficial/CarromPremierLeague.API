@@ -43,14 +43,27 @@ def verify_password(password: str, password_hash: str, password_salt: str, itera
     return hmac.compare_digest(_b64encode(digest), password_hash)
 
 
-def create_access_token(admin_id: int, username: str, token_version: int) -> str:
+def create_access_token(
+    admin_id: int,
+    username: str,
+    token_version: int,
+    assistant_access: bool = False,
+    expires_at: datetime | None = None,
+) -> str:
+    """Sign a token. The ast claim says whether the admin could use Striker when it was issued.
+
+    The claim only tells the console what to show. The server decides from the database on every
+    request, so a stale claim never grants or keeps access.
+    """
     issued_at = datetime.now(timezone.utc)
-    expires_at = issued_at + timedelta(minutes=settings.AUTH_TOKEN_EXPIRE_MINUTES)
+    if expires_at is None:
+        expires_at = issued_at + timedelta(minutes=settings.AUTH_TOKEN_EXPIRE_MINUTES)
     header = _b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
     payload = _b64encode(json.dumps({
         "sub": str(admin_id),
         "username": username,
         "ver": token_version,
+        "ast": bool(assistant_access),
         "iat": int(issued_at.timestamp()),
         "exp": int(expires_at.timestamp()),
     }, separators=(",", ":")).encode())

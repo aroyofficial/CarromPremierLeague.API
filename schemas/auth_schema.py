@@ -7,13 +7,30 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=100)
     password: str = Field(..., min_length=12, max_length=256)
+    device_id: str | None = Field(None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    device_label: str | None = Field(None, max_length=160)
 
 
 class TokenResponse(BaseModel):
-    access_token: str
+    access_token: str = ""
     token_type: str = "bearer"
-    expires_in: int
+    expires_in: int = 0
     must_change_password: bool = False
+    pending: bool = False
+    request_id: str | None = None
+
+
+class LogoutRequest(BaseModel):
+    device_id: str | None = Field(None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class LoginApproval(BaseModel):
+    request_id: str = Field(..., min_length=8, max_length=64)
+
+
+class PendingLogin(BaseModel):
+    request_id: str
+    device_label: str
 
 
 class AdminProfileFields(BaseModel):

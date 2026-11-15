@@ -1,5 +1,5 @@
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 
@@ -7,6 +7,7 @@ from core.permissions import (
     ALL_CODES,
     MANAGE_PERMISSIONS,
     UPDATE_ADMINS,
+    USE_ASSISTANT,
     describe,
     denied_message,
     missing_parent_message,
@@ -26,15 +27,17 @@ from schemas.auth_schema import (
 )
 from core.config import settings
 from services.admin_codes import MAX_PER_HOUR, MemoryCodeStore, _utcnow
+from services.admin_sessions import MemorySessionStore
 from services.mailer import MailError, MemoryMailer
 
 
 class AuthService:
-    def __init__(self, repository: AdminRepository, permissions: PermissionRepository, mailer=None, codes=None):
+    def __init__(self, repository: AdminRepository, permissions: PermissionRepository, mailer=None, codes=None, sessions=None):
         self.repository = repository
         self.permissions = permissions
         self.mailer = mailer if mailer is not None else MemoryMailer()
         self.codes = codes if codes is not None else MemoryCodeStore()
+        self.sessions = sessions if sessions is not None else MemorySessionStore()
 
     @staticmethod
     def _normalize_username(username: str) -> str:
@@ -65,16 +68,93 @@ class AuthService:
                 "Give another active admin that permission first.",
             )
 
+    def _issue_token(self, record: dict, expires_at=None) -> str:
+        assistant_access = USE_ASSISTANT in self.permissions.codes_for(record["Id"])
+        return create_access_token(
+            record["Id"], record["Username"], record["TokenVersion"], assistant_access, expires_at
+        )
+
+    def refresh(self, admin: AdminResponse, token: str) -> TokenResponse:
+        """Reissue the bearer token with the claims the database holds now. The expiry does not move."""
+        payload = decode_access_token(token)
+        expires_at = datetime.fromtimestamp(int(payload["exp"]), tz=timezone.utc)
+        fresh = create_access_token(
+            admin.id,
+            admin.username,
+            int(payload["ver"]),
+            USE_ASSISTANT in admin.permissions,
+            expires_at,
+        )
+        remaining = max(0, int((expires_at - datetime.now(timezone.utc)).total_seconds()))
+        return TokenResponse(access_token=fresh, expires_in=remaining, must_change_password=admin.must_change_password)
+
     def login(self, request: LoginRequest) -> TokenResponse:
         record = self._matching_login(request.username, request.password)
         must_change = bool(record.get("MustChangePassword"))
         if not record["IsActive"] and not must_change:
             raise self._invalid_login()
+        now = _utcnow()
+        if request.device_id:
+            waiting = self.sessions.begin(record["Id"], request.device_id, request.device_label, now)
+            if waiting is not None:
+                return TokenResponse(
+                    access_token="",
+                    expires_in=0,
+                    must_change_password=must_change,
+                    pending=True,
+                    request_id=waiting.id,
+                )
+        token = self._issue_token(record)
+        if request.device_id:
+            self.sessions.activate(
+                record["Id"],
+                request.device_id,
+                request.device_label,
+                now + timedelta(minutes=settings.AUTH_TOKEN_EXPIRE_MINUTES),
+            )
         return TokenResponse(
-            access_token=create_access_token(record["Id"], record["Username"], record["TokenVersion"]),
+            access_token=token,
             expires_in=settings.AUTH_TOKEN_EXPIRE_MINUTES * 60,
             must_change_password=must_change,
         )
+
+    def pending_login(self, admin: AdminResponse):
+        return self.sessions.pending_for(admin.id, _utcnow())
+
+    def approve_login(self, admin: AdminResponse, request_id: str) -> None:
+        now = _utcnow()
+        challenge = self.sessions.require_pending(admin.id, request_id, now)
+        self.repository.update(admin.id, {"increment_token_version": True})
+        record = self.repository.get_credentials_by_username(admin.username)
+        token = self._issue_token(record)
+        expires = now + timedelta(minutes=settings.AUTH_TOKEN_EXPIRE_MINUTES)
+        self.sessions.activate(admin.id, challenge.device_id, challenge.device_label, expires)
+        self.sessions.resolve(admin.id, request_id, "approved", now, token)
+
+    def deny_login(self, admin: AdminResponse, request_id: str) -> None:
+        self.sessions.resolve(admin.id, request_id, "denied", _utcnow())
+
+    def claim_login(self, request_id: str) -> TokenResponse:
+        challenge = self.sessions.claim(request_id, _utcnow())
+        if challenge is None or challenge.status in {"expired", "claimed"}:
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="That sign-in request expired. Try again.")
+        if challenge.status == "pending":
+            return TokenResponse(access_token="", expires_in=0, pending=True, request_id=request_id)
+        if challenge.status == "denied":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The other session declined this sign-in.")
+        if challenge.status != "approved" or not challenge.access_token:
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="That sign-in request expired. Try again.")
+        return TokenResponse(
+            access_token=challenge.access_token,
+            expires_in=settings.AUTH_TOKEN_EXPIRE_MINUTES * 60,
+        )
+
+    def logout(self, admin: AdminResponse, device_id: str | None = None) -> None:
+        if device_id:
+            live = self.sessions.live(admin.id, _utcnow())
+            if live is not None and live.device_id != device_id:
+                return
+        self.sessions.clear(admin.id)
 
     def current_admin(self, token: str) -> AdminResponse:
         payload = decode_access_token(token)
@@ -280,7 +360,10 @@ class AuthService:
                 raise HTTPException(status_code=400, detail="At least one active admin is required.")
             self._ensure_other_manager(existing)
             changes["increment_token_version"] = True
+        ends_session = bool(changes.get("increment_token_version"))
         updated = self.repository.update(admin_id, changes)
+        if ends_session:
+            self.sessions.clear(admin_id)
         if password_changed and updated and updated.email:
             self._send(lambda: self.mailer.password_changed(updated, activated), None)
         return self.get_admin(admin_id)
@@ -328,6 +411,7 @@ class AuthService:
             changes["is_active"] = True
             changes["must_change_password"] = False
         updated = self.repository.update(record["Id"], changes)
+        self.sessions.clear(record["Id"])
         if updated and updated.email:
             self._send(lambda: self.mailer.password_changed(updated, bool(record.get("MustChangePassword"))), None)
 

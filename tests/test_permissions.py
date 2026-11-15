@@ -51,6 +51,7 @@ class CatalogTests(unittest.TestCase):
     def test_every_write_route_names_a_permission_or_requires_sign_in(self):
         open_writes = {
             ("POST", "/auth/login"),
+            ("POST", "/auth/login-request/claim"),
             ("POST", "/auth/bootstrap"),
             ("POST", "/auth/forgot-password"),
             ("POST", "/auth/reset-password"),

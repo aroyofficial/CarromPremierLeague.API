@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from core.response import ApiResponse
-from routes.auth_routes import get_current_admin
+from core.permissions import USE_ASSISTANT
+from routes.auth_routes import require_permission
 from schemas.auth_schema import AdminResponse
 from services.assistant import actions
 from services.assistant.engine import NAME, ChatResult, Engine
@@ -124,8 +125,18 @@ def _off_response():
     return ApiResponse(success=True, message=None, data=ChatResponse(reply=OFF_REPLY))
 
 
-async def assistant_is_enabled(app) -> bool:
-    """Read the switch and release the connection before any model call. Unreadable means off."""
+SWITCHES = {
+    "public": ("assistant_public_enabled", "assistant_enabled"),
+    "admin": ("assistant_admin_enabled", "assistant_enabled"),
+}
+
+
+async def assistant_is_enabled(app, mode: str = "public") -> bool:
+    """Read the switch for this audience and release the connection before any model call.
+
+    Public chat follows the public switch. Admin chat follows the admin switch, and the caller still
+    needs the assistant.use permission. Unreadable settings mean off.
+    """
     executor = ToolExecutor(app, public=True)
     try:
         code, payload = await executor._call("GET", "/settings")
@@ -134,7 +145,12 @@ async def assistant_is_enabled(app) -> bool:
     finally:
         await executor.close()
     data = payload.get("data") if code == 200 and isinstance(payload, dict) else None
-    return bool(data.get("assistant_enabled")) if isinstance(data, dict) else False
+    if not isinstance(data, dict):
+        return False
+    for key in SWITCHES[mode]:
+        if key in data:
+            return bool(data[key])
+    return False
 
 
 def _client_key(request: Request) -> str:
@@ -173,7 +189,7 @@ async def assistant_status():
 @router.post("/public/chat", response_model=ApiResponse[ChatResponse])
 async def public_chat(payload: ChatRequest, request: Request):
     public_limiter.check(_client_key(request))
-    if not await assistant_is_enabled(request.app):
+    if not await assistant_is_enabled(request.app, "public"):
         return _off_response()
     history = [turn.model_dump() for turn in payload.history]
     return await _run(request, "public", None, lambda engine: engine.chat(payload.message, history))
@@ -183,10 +199,10 @@ async def public_chat(payload: ChatRequest, request: Request):
 async def admin_chat(
     payload: AdminChatRequest,
     request: Request,
-    admin: AdminResponse = Depends(get_current_admin),
+    admin: AdminResponse = Depends(require_permission(USE_ASSISTANT)),
 ):
     admin_limiter.check(f"admin:{admin.id}")
-    if not await assistant_is_enabled(request.app):
+    if not await assistant_is_enabled(request.app, "admin"):
         return _off_response()
     history = [turn.model_dump() for turn in payload.history]
 
@@ -204,10 +220,10 @@ async def admin_chat(
 async def admin_confirm(
     payload: ConfirmRequest,
     request: Request,
-    admin: AdminResponse = Depends(get_current_admin),
+    admin: AdminResponse = Depends(require_permission(USE_ASSISTANT)),
 ):
     admin_limiter.check(f"admin:{admin.id}")
-    if not await assistant_is_enabled(request.app):
+    if not await assistant_is_enabled(request.app, "admin"):
         return _off_response()
 
     async def work(engine: Engine):

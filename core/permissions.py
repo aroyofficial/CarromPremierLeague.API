@@ -57,6 +57,7 @@ AREAS: tuple[Area, ...] = (
     Area("settings", "matchday", "Settings", "Match clock and Queen rules.", "Setting", 70),
     Area("admins", "administration", "Admin users", "Accounts that can sign in to this console.", "UserFilled", 80),
     Area("permissions", "administration", "Permissions", "Granting and removing permissions.", "Lock", 90),
+    Area("assistant", "administration", "Striker assistant", "Who may chat with Striker in this console.", "ChatDotRound", 95),
 )
 
 CATALOG: tuple[Permission, ...] = (
@@ -122,6 +123,13 @@ CATALOG: tuple[Permission, ...] = (
         "Grant and revoke permissions you hold for any admin user.",
         810,
     ),
+    Permission(
+        "assistant.use",
+        "assistant",
+        "Use Striker",
+        "Open the Striker chat in this console. Striker still follows every other permission you hold.",
+        910,
+    ),
 )
 
 ROLES: tuple[Role, ...] = (
@@ -168,6 +176,13 @@ ROLES: tuple[Role, ...] = (
         50,
         ("gallery.create", "gallery.update", "gallery.publish", "gallery.delete"),
     ),
+    Role(
+        "assistant_user",
+        "Striker user",
+        "Can chat with Striker in the admin console.",
+        60,
+        ("assistant.use",),
+    ),
 )
 
 ALL_CODES: frozenset[str] = frozenset(permission.code for permission in CATALOG)
@@ -175,6 +190,7 @@ NAMES: dict[str, str] = {permission.code: permission.name for permission in CATA
 AREA_NAMES: dict[str, str] = {area.code: area.name for area in AREAS}
 PARENTS: dict[str, str] = {permission.code: permission.parent for permission in CATALOG if permission.parent}
 MANAGE_PERMISSIONS = "permissions.manage"
+USE_ASSISTANT = "assistant.use"
 VIEW_ADMINS = "admins.view"
 CREATE_ADMINS = "admins.create"
 UPDATE_ADMINS = "admins.update"
