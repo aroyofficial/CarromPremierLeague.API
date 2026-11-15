@@ -356,6 +356,15 @@ class EngineTests(unittest.TestCase):
         result = run(engine.chat("hi", []))
         run(executor.close())
         self.assertIn("isn't switched on", result.reply)
+        self.assertFalse(result.available)
+
+    def test_used_up_credits_hide_the_assistant(self):
+        provider = ScriptedProvider("groq", [ProviderError("quota", kind="exhausted")])
+        engine, executor = self._engine("public", [provider])
+        result = run(engine.chat("hi", []))
+        run(executor.close())
+        self.assertFalse(result.available)
+        self.assertIn("No AI provider is available", result.reply)
 
     def test_admin_prompt_names_the_admin_and_permissions(self):
         provider = ScriptedProvider("p", [Reply(text="hi")])
@@ -367,18 +376,59 @@ class EngineTests(unittest.TestCase):
 
 
 class RouteTests(unittest.TestCase):
-    def test_status_reports_configured_providers_without_keys(self):
+    def _status(self, keys, probe):
         from fastapi.testclient import TestClient
 
         from core.config import settings
         from main import app
+        from services.assistant import readiness
 
-        with mock.patch.multiple(settings, GEMINI_API_KEY="k-secret", GROQ_API_KEY=None, OPENROUTER_API_KEY=None):
-            response = TestClient(app).get("/assistant/status")
+        readiness.clear()
+
+        async def fake_probe(provider):
+            return probe(provider)
+
+        with (
+            mock.patch.multiple(settings, **keys),
+            mock.patch("services.assistant.readiness.probe", fake_probe),
+        ):
+            return TestClient(app).get("/assistant/status")
+
+    def test_credit_errors_are_exhausted_and_a_rate_limit_is_not(self):
+        from services.assistant.providers import failure_kind
+
+        self.assertEqual(failure_kind(429, "Rate limit reached on tokens per day (TPD)"), "exhausted")
+        self.assertEqual(failure_kind(402, "This request requires more credits"), "exhausted")
+        self.assertEqual(failure_kind(429, "Rate limit reached on requests per minute (RPM)"), "limited")
+        self.assertEqual(failure_kind(401, "invalid api key"), "unavailable")
+        self.assertEqual(failure_kind(404, "The model `llama-3.3-70b-versatile` does not exist"), "unavailable")
+
+    def test_status_reports_a_provider_that_can_answer(self):
+        response = self._status(
+            {"GEMINI_API_KEY": "k-secret", "GROQ_API_KEY": None, "OPENROUTER_API_KEY": None},
+            lambda _provider: "ok",
+        )
         body = response.json()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(body["data"], {"name": "Striker", "available": True, "providers": ["Google Gemini"]})
         self.assertNotIn("k-secret", response.text)
+
+    def test_status_hides_the_assistant_when_credits_are_used_up(self):
+        response = self._status(
+            {"GEMINI_API_KEY": None, "GROQ_API_KEY": "k-secret", "OPENROUTER_API_KEY": None},
+            lambda _provider: "exhausted",
+        )
+        self.assertEqual(response.json()["data"]["available"], False)
+        self.assertEqual(response.json()["data"]["providers"], [])
+
+    def test_status_stays_available_when_one_provider_can_answer(self):
+        response = self._status(
+            {"GEMINI_API_KEY": "k-secret", "GROQ_API_KEY": "k-secret", "OPENROUTER_API_KEY": None},
+            lambda provider: "exhausted" if provider.name == "gemini" else "ok",
+        )
+        data = response.json()["data"]
+        self.assertTrue(data["available"])
+        self.assertEqual(data["providers"], ["Groq"])
 
     def test_public_chat_validates_input(self):
         from fastapi.testclient import TestClient

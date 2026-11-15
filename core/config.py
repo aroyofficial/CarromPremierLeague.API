@@ -43,7 +43,7 @@ class Settings:
         self.GEMINI_API_KEY: str | None = self._get_optional_env("CPL_GEMINI_API_KEY")
         self.GEMINI_MODEL: str = self._get_optional_env("CPL_GEMINI_MODEL") or "gemini-2.5-flash"
         self.GROQ_API_KEY: str | None = self._get_optional_env("CPL_GROQ_API_KEY")
-        self.GROQ_MODEL: str = self._get_optional_env("CPL_GROQ_MODEL") or "llama-3.3-70b-versatile"
+        self.GROQ_MODEL: str = self._get_optional_env("CPL_GROQ_MODEL") or "openai/gpt-oss-120b"
         self.OPENROUTER_API_KEY: str | None = self._get_optional_env("CPL_OPENROUTER_API_KEY")
         self.OPENROUTER_MODEL: str = (
             self._get_optional_env("CPL_OPENROUTER_MODEL") or "meta-llama/llama-3.3-70b-instruct:free"

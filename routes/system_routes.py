@@ -96,7 +96,7 @@ DESCRIPTIONS = {
     ("GET", "/seasons/{season_id}/league-table"): "Get the league table for a season",
     ("GET", "/settings"): "Get competition settings",
     ("PUT", "/settings"): "Update competition settings",
-    ("GET", "/assistant/status"): "Whether the Striker assistant has an AI provider configured",
+    ("GET", "/assistant/status"): "Whether Striker has an AI provider that can answer right now",
     ("POST", "/assistant/public/chat"): "Ask Striker about league data (read only, rate limited)",
     ("POST", "/assistant/admin/chat"): "Ask Striker as the signed-in admin; changes need confirmation",
     ("POST", "/assistant/admin/confirm"): "Confirm or cancel a change Striker prepared",

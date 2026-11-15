@@ -1,5 +1,6 @@
 """LLM providers behind one small interface. Keys stay on the server."""
 
+import contextvars
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -10,10 +11,38 @@ import httpx
 from core.config import settings
 
 TIMEOUT = httpx.Timeout(45.0, connect=10.0)
+PROBE_TIMEOUT = httpx.Timeout(12.0, connect=5.0)
+request_timeout: contextvars.ContextVar[httpx.Timeout] = contextvars.ContextVar("request_timeout", default=TIMEOUT)
+
+_EXHAUSTED = (
+    "insufficient_quota",
+    "quota",
+    "credit",
+    "billing",
+    "payment required",
+    "resource_exhausted",
+    "tokens per day",
+    "tpd",
+    "exceeded your current",
+)
 
 
 class ProviderError(RuntimeError):
-    pass
+    def __init__(self, message: str, kind: str = "down"):
+        super().__init__(message)
+        self.kind = kind
+
+
+def failure_kind(status_code: int, body: str) -> str:
+    """Classify a provider rejection. Credits and dead keys hide Striker; a short rate limit does not."""
+    text = (body or "").lower()
+    if status_code in (401, 403, 404) or "model_not_found" in text or "does not exist" in text:
+        return "unavailable"
+    if status_code == 402 or any(marker in text for marker in _EXHAUSTED):
+        return "exhausted"
+    if status_code == 429:
+        return "limited"
+    return "down"
 
 
 @dataclass
@@ -68,11 +97,12 @@ def _gemini_schema(node: dict) -> dict:
 
 async def _post(client: httpx.AsyncClient, provider: str, url: str, **kwargs) -> dict:
     try:
-        response = await client.post(url, timeout=TIMEOUT, **kwargs)
+        response = await client.post(url, timeout=request_timeout.get(), **kwargs)
     except httpx.HTTPError as error:
         raise ProviderError(f"{provider} is unreachable: {type(error).__name__}") from None
     if response.status_code >= 400:
-        raise ProviderError(f"{provider} returned {response.status_code}: {response.text[:300]}")
+        detail = response.text[:300]
+        raise ProviderError(f"{provider} returned {response.status_code}: {detail}", failure_kind(response.status_code, detail))
     try:
         return response.json()
     except ValueError:
@@ -181,8 +211,10 @@ class OpenAISession(Session):
             "model": self.provider.model,
             "messages": self.messages,
             "temperature": 0.2,
-            "max_tokens": 1500,
         }
+        body.update(self.provider.request_body)
+        if "max_tokens" not in body and "max_completion_tokens" not in body:
+            body["max_tokens"] = 1500
         if self.tools and allow_tools:
             body["tools"] = self.tools
             body["tool_choice"] = "auto"
@@ -223,7 +255,17 @@ class OpenAISession(Session):
 
 
 class OpenAICompatibleProvider(Provider):
-    def __init__(self, name: str, label: str, url: str, api_key: str, model: str, client: httpx.AsyncClient, extra_headers=None):
+    def __init__(
+        self,
+        name: str,
+        label: str,
+        url: str,
+        api_key: str,
+        model: str,
+        client: httpx.AsyncClient,
+        extra_headers=None,
+        request_body=None,
+    ):
         self.name = name
         self.label = label
         self.url = url
@@ -231,6 +273,7 @@ class OpenAICompatibleProvider(Provider):
         self.model = model
         self.client = client
         self.extra_headers = extra_headers or {}
+        self.request_body = request_body or {}
 
     def session(self, system, history, tools) -> Session:
         return OpenAISession(self, system, history, tools)
@@ -250,6 +293,11 @@ def configured_providers(client: httpx.AsyncClient) -> list[Provider]:
                 settings.GROQ_API_KEY,
                 settings.GROQ_MODEL,
                 client,
+                request_body={
+                    "max_completion_tokens": 4096,
+                    "reasoning_effort": "low",
+                    "reasoning_format": "hidden",
+                },
             )
         )
     if settings.OPENROUTER_API_KEY:

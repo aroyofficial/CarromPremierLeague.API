@@ -7,6 +7,7 @@ from typing import Any
 
 from services.assistant import actions
 from services.assistant.executor import ToolArgumentError, ToolExecutor, split_arguments
+from services.assistant import readiness
 from services.assistant.providers import Provider, ProviderError, ToolSpec
 from services.assistant.tools import Mode, Tool, tools_for
 
@@ -88,6 +89,7 @@ class ChatResult:
     action: dict | None = None
     changed: bool = False
     provider: str | None = None
+    available: bool = True
 
     def as_dict(self) -> dict:
         return {
@@ -96,6 +98,7 @@ class ChatResult:
             "action": self.action,
             "changed": self.changed,
             "provider": self.provider,
+            "available": self.available,
         }
 
 
@@ -155,17 +158,29 @@ class Engine:
 
     async def chat(self, message: str, history: list[dict]) -> ChatResult:
         if not self.providers:
-            return ChatResult(reply=f"{NAME} isn't switched on yet. An administrator needs to add an AI provider key.")
+            return ChatResult(
+                reply=f"{NAME} isn't switched on yet. An administrator needs to add an AI provider key.",
+                available=False,
+            )
         conversation = history + [{"role": "user", "content": message}]
         system = self.system_prompt()
         specs = self.specs()
+        kinds: list[str] = []
         for provider in self.providers:
             try:
                 result = await self._turn(provider, system, conversation, specs)
+                readiness.remember(provider.name, "ok")
                 result.provider = provider.label
                 return result
             except ProviderError as error:
+                readiness.remember(provider.name, error.kind)
+                kinds.append(error.kind)
                 log.warning("Striker provider %s failed: %s", provider.name, error)
+        if kinds and all(kind in {"exhausted", "unavailable"} for kind in kinds):
+            return ChatResult(
+                reply=f"{NAME} can't answer right now. No AI provider is available.",
+                available=False,
+            )
         return ChatResult(reply=f"{NAME} can't reach its AI models right now. Please try again in a minute.")
 
     async def _turn(self, provider: Provider, system: str, conversation: list[dict], specs: list[ToolSpec]) -> ChatResult:

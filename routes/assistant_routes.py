@@ -13,6 +13,7 @@ from services.assistant import actions
 from services.assistant.engine import NAME, ChatResult, Engine
 from services.assistant.executor import ToolExecutor
 from services.assistant.providers import configured_providers
+from services.assistant.readiness import usable_labels
 
 router = APIRouter(prefix="/assistant", tags=["Assistant"])
 
@@ -83,6 +84,7 @@ class ChatResponse(BaseModel):
     action: ChatAction | None = None
     changed: bool = False
     provider: str | None = None
+    available: bool = True
 
 
 class AssistantStatus(BaseModel):
@@ -160,7 +162,7 @@ async def _run(request: Request, mode: str, admin: AdminResponse | None, work):
 @router.get("/status", response_model=ApiResponse[AssistantStatus])
 async def assistant_status():
     async with httpx.AsyncClient() as client:
-        providers = [provider.label for provider in configured_providers(client)]
+        providers = await usable_labels(client)
     return ApiResponse(
         success=True,
         message=None,
