@@ -15,7 +15,7 @@ os.environ.setdefault("CPL_DB_PWD", "unused")
 os.environ.setdefault("CPL_DB_NAME", "unused")
 os.environ.setdefault("CPL_DB_POOL_SIZE", "1")
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -24,7 +24,9 @@ from core.security import PASSWORD_ITERATIONS, decode_access_token, hash_passwor
 from schemas.auth_schema import (
     AdminCreateRequest,
     AdminUpdateRequest,
+    ChangePasswordRequest,
     LoginRequest,
+    ResetCodeRequest,
     ResetPasswordRequest,
 )
 from services.auth_service import AuthService
@@ -65,6 +67,7 @@ class FakeAdminRepository:
             email=item.get("Email"),
             avatar_url=item.get("AvatarUrl"),
             must_change_password=bool(item.get("MustChangePassword")),
+            password_changed_at=item.get("PasswordChangedAt"),
         )
 
     def get_all(self):
@@ -120,6 +123,7 @@ class FakeAdminRepository:
                 "phone_code": "PhoneCode",
                 "phone_number": "PhoneNumber",
                 "email": "Email",
+                "password_changed_at": "PasswordChangedAt",
             }[key]] = value
         return self.get_by_id(admin_id)
 
@@ -163,6 +167,22 @@ class AuthServiceTests(unittest.TestCase):
         self.primary = self.service.bootstrap_admin(
             AdminCreateRequest(username="primary-admin", password="correct-horse-battery")
         )
+
+    def test_live_mail_returns_before_the_provider_answers(self):
+        import threading
+        import time
+
+        gate = threading.Event()
+
+        class SlowMailer:
+            defer = True
+            configured = True
+
+        self.service.mailer = SlowMailer()
+        started = time.perf_counter()
+        self.service._send(lambda: gate.wait(2), None)
+        self.assertLess(time.perf_counter() - started, 0.5)
+        gate.set()
 
     def test_login_returns_valid_bearer_token(self):
         token = self.service.login(
@@ -453,6 +473,60 @@ class AuthServiceTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             self.service.login(LoginRequest(username="primary-admin", password="correct-horse-battery"))
 
+    def test_profile_change_checks_the_code_before_the_password(self):
+        self._give_primary_email()
+        token = self.service.login(LoginRequest(username="primary-admin", password="correct-horse-battery"))
+        self.service.request_password_code(self.primary)
+        with self.assertRaises(HTTPException) as wrong:
+            self.service.verify_password_code(self.primary, "000000" if self._code() != "000000" else "111111")
+        self.assertEqual(wrong.exception.status_code, 400)
+        self.service.request_password_code(self.primary)
+        ticket = self.service.verify_password_code(self.primary, self._code())
+        self.assertGreater(len(ticket.ticket), 20)
+        self.assertEqual(ticket.expires_in, 600)
+
+        self.service.change_password(self.primary, ChangePasswordRequest(ticket=ticket.ticket, password="brand-new-password-42"))
+
+        with self.assertRaises(HTTPException) as signed_out:
+            self.service.current_admin(token.access_token)
+        self.assertEqual(signed_out.exception.status_code, 401)
+        self.service.login(LoginRequest(username="primary-admin", password="brand-new-password-42"))
+        self.assertIsNotNone(self.service.get_admin(self.primary.id).password_changed_at)
+        follow_up = self.service.mailer.sent[-1]
+        self.assertEqual(follow_up.subject, "Your admin password was changed")
+        self.assertIn("When:", follow_up.text)
+        self.assertIn("Changed from My profile", follow_up.text)
+
+    def test_a_change_ticket_works_once(self):
+        self._give_primary_email()
+        self.service.request_password_code(self.primary)
+        ticket = self.service.verify_password_code(self.primary, self._code()).ticket
+        self.service.change_password(self.primary, ChangePasswordRequest(ticket=ticket, password="brand-new-password-42"))
+        with self.assertRaises(HTTPException) as again:
+            self.service.change_password(self.primary, ChangePasswordRequest(ticket=ticket, password="another-password-4242"))
+        self.assertIn("expired", again.exception.detail)
+        with self.assertRaises(HTTPException):
+            self.service.change_password(self.primary, ChangePasswordRequest(ticket="x" * 43, password="another-password-4242"))
+
+    def test_reset_checks_the_code_then_sets_the_password_with_a_ticket(self):
+        self._give_primary_email()
+        self.service.request_password_reset("primary-admin")
+        with self.assertRaises(HTTPException):
+            self.service.verify_reset_code(ResetCodeRequest(username="primary-admin", code="000000" if self._code() != "000000" else "111111"))
+        self.service.request_password_reset("primary-admin")
+        ticket = self.service.verify_reset_code(ResetCodeRequest(username="primary-admin", code=self._code()))
+        self.service.reset_password(ResetPasswordRequest(username="primary-admin", ticket=ticket.ticket, password="reset-with-ticket-99"))
+        self.service.login(LoginRequest(username="primary-admin", password="reset-with-ticket-99"))
+        follow_up = self.service.mailer.sent[-1]
+        self.assertIn("Reset with an email code", follow_up.text)
+        self.assertIsNotNone(self.service.get_admin(self.primary.id).password_changed_at)
+        with self.assertRaises(HTTPException):
+            self.service.reset_password(ResetPasswordRequest(username="primary-admin", ticket=ticket.ticket, password="reset-with-ticket-00"))
+
+    def test_reset_needs_a_code_or_a_ticket(self):
+        with self.assertRaises(ValidationError):
+            ResetPasswordRequest(username="primary-admin", password="reset-with-ticket-99")
+
     def test_unknown_username_reset_does_not_reveal_the_account(self):
         self.service.request_password_reset("missing-admin")
         self.assertEqual(self.service.mailer.sent, [])
@@ -480,6 +554,9 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(self.service.current_admin(first.access_token).id, self.primary.id)
         notice = self.service.pending_login(self.primary)
         self.assertEqual(notice.device_label, "Firefox on Windows")
+        remaining = (notice.expires_at - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()
+        self.assertGreater(remaining, 590)
+        self.assertLessEqual(remaining, 600)
         waiting = self.service.claim_login(second.request_id)
         self.assertTrue(waiting.pending)
         self.service.approve_login(self.primary, notice.id)

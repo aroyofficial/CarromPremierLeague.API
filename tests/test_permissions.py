@@ -55,6 +55,7 @@ class CatalogTests(unittest.TestCase):
             ("POST", "/auth/bootstrap"),
             ("POST", "/auth/forgot-password"),
             ("POST", "/auth/reset-password"),
+            ("POST", "/auth/reset-code/verify"),
             ("POST", "/auth/mfa/email-code"),
             ("POST", "/auth/mfa/passkey-options"),
             ("POST", "/auth/mfa/verify"),

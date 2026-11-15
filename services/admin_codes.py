@@ -11,10 +11,18 @@ from core.config import settings
 CODE_MINUTES = 10
 MAX_ATTEMPTS = 5
 MAX_PER_HOUR = 5
+# A verified email code is exchanged for a ticket, which then allows exactly one password change or reset.
+TICKET_PURPOSE = "password_ticket"
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _new_secret(purpose: str) -> str:
+    if purpose == TICKET_PURPOSE:
+        return secrets.token_urlsafe(32)
+    return f"{secrets.randbelow(1000000):06d}"
 
 
 def _hash(code: str, salt: str) -> str:
@@ -40,7 +48,7 @@ class MemoryCodeStore:
         self._next = 1
 
     def issue(self, admin_id: int, purpose: str, destination: str) -> str:
-        code = f"{secrets.randbelow(1000000):06d}"
+        code = _new_secret(purpose)
         salt = secrets.token_hex(16)
         self.rows.append(StoredCode(
             id=self._next,
@@ -89,7 +97,7 @@ class SqlCodeStore:
         self.db = db
 
     def issue(self, admin_id: int, purpose: str, destination: str) -> str:
-        code = f"{secrets.randbelow(1000000):06d}"
+        code = _new_secret(purpose)
         salt = secrets.token_hex(16)
         cursor = self.db.cursor()
         cursor.execute(

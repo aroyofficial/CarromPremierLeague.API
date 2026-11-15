@@ -4,7 +4,7 @@ from schemas.auth_schema import AdminResponse
 
 _ADMIN_COLUMNS = """
     Id, Username, IsActive, MustChangePassword, FirstName, LastName, DateOfBirth, Gender,
-    PhoneCode, PhoneNumber, Email, AvatarUrl
+    PhoneCode, PhoneNumber, Email, AvatarUrl, PasswordChangedAt
 """
 
 
@@ -35,6 +35,7 @@ class AdminRepository:
             email=row.get("Email"),
             avatar_url=row.get("AvatarUrl"),
             must_change_password=bool(row.get("MustChangePassword")),
+            password_changed_at=row.get("PasswordChangedAt"),
         )
 
     def count_active(self) -> int:
@@ -155,6 +156,7 @@ class AdminRepository:
             "phone_code": "PhoneCode",
             "phone_number": "PhoneNumber",
             "email": "Email",
+            "password_changed_at": "PasswordChangedAt",
         }
         increment_token_version = values.pop("increment_token_version", False)
         fields = [f"{mapping[key]} = %s" for key in values]

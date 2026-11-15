@@ -27,6 +27,7 @@ from schemas.auth_schema import (
     AdminPermissionsUpdate,
     AdminResponse,
     AdminUpdateRequest,
+    ChangePasswordRequest,
     EmailCodeRequest,
     EmailFactorRequest,
     ForgotPasswordRequest,
@@ -38,9 +39,12 @@ from schemas.auth_schema import (
     MfaVerifyRequest,
     PasskeyOptionsResponse,
     PasskeyRegisterRequest,
+    PasswordCodeVerifyRequest,
+    PasswordTicket,
     PendingLogin,
     TotpConfirmRequest,
     TotpSetupResponse,
+    ResetCodeRequest,
     ResetPasswordRequest,
     PermissionAreaNode,
     PermissionNode,
@@ -50,7 +54,7 @@ from schemas.auth_schema import (
     PermissionTreeResponse,
     TokenResponse,
 )
-from services.admin_codes import SqlCodeStore
+from services.admin_codes import SqlCodeStore, _utcnow
 from services.admin_mfa import SqlMfaStore
 from services.auth_service import AuthService
 from services.admin_sessions import SqlSessionStore
@@ -93,7 +97,7 @@ def _pending_password_allowed(request: Request, admin: AdminResponse) -> bool:
     path = request.url.path.rstrip("/") or "/"
     if request.method == "GET" and path == "/auth/me":
         return True
-    if path in {"/auth/login-request", "/auth/logout", "/auth/password-code"}:
+    if path in {"/auth/login-request", "/auth/logout", "/auth/password-code", "/auth/password-code/verify", "/auth/change-password"}:
         return True
     if path.startswith("/auth/login-request/"):
         return True
@@ -168,6 +172,29 @@ def password_code(admin: AdminResponse = Depends(get_current_admin), service: Au
     return ApiResponse(success=True, message="A code was sent to your email address.", data=True)
 
 
+@router.post(
+    "/auth/password-code/verify",
+    response_model=ApiResponse[PasswordTicket],
+    summary="Check the emailed code and get a one-time password change ticket",
+)
+def verify_password_code(
+    body: PasswordCodeVerifyRequest,
+    admin: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+):
+    return ApiResponse(success=True, message="Code accepted.", data=service.verify_password_code(admin, body.code))
+
+
+@router.post("/auth/change-password", response_model=ApiResponse[bool], summary="Set a new password with a change ticket")
+def change_password(
+    body: ChangePasswordRequest,
+    admin: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+):
+    service.change_password(admin, body)
+    return ApiResponse(success=True, message="Password changed. Sign in again with the new password.", data=True)
+
+
 @router.get("/auth/mfa", response_model=ApiResponse[MfaStatus], summary="Your sign-in factors")
 def mfa_status(admin: AdminResponse = Depends(get_current_admin), service: AuthService = Depends(get_service)):
     return ApiResponse(success=True, message=None, data=service.mfa_status(admin))
@@ -240,7 +267,11 @@ def refresh_token(
 @router.get("/auth/login-request", response_model=ApiResponse[PendingLogin | None], summary="Sign-in waiting for this session")
 def pending_login(admin: AdminResponse = Depends(get_current_admin), service: AuthService = Depends(get_service)):
     challenge = service.pending_login(admin)
-    data = None if challenge is None else PendingLogin(request_id=challenge.id, device_label=challenge.device_label)
+    data = None if challenge is None else PendingLogin(
+        request_id=challenge.id,
+        device_label=challenge.device_label,
+        expires_in=max(0, int((challenge.expires_at - _utcnow()).total_seconds())),
+    )
     return ApiResponse(success=True, message=None, data=data)
 
 
@@ -294,7 +325,16 @@ def forgot_password(request: ForgotPasswordRequest, service: AuthService = Depen
     )
 
 
-@router.post("/auth/reset-password", response_model=ApiResponse[bool], summary="Reset a password with a code")
+@router.post(
+    "/auth/reset-code/verify",
+    response_model=ApiResponse[PasswordTicket],
+    summary="Check a reset code and get a one-time reset ticket",
+)
+def verify_reset_code(request: ResetCodeRequest, service: AuthService = Depends(get_service)):
+    return ApiResponse(success=True, message="Code accepted.", data=service.verify_reset_code(request))
+
+
+@router.post("/auth/reset-password", response_model=ApiResponse[bool], summary="Reset a password with a ticket or code")
 def reset_password(request: ResetPasswordRequest, service: AuthService = Depends(get_service)):
     service.reset_password(request)
     return ApiResponse(success=True, message="Password updated. You can sign in with it now.", data=True)

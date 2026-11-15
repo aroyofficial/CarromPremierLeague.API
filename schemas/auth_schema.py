@@ -34,6 +34,7 @@ class LoginApproval(BaseModel):
 class PendingLogin(BaseModel):
     request_id: str
     device_label: str
+    expires_in: int = Field(..., ge=0)
 
 
 class AdminProfileFields(BaseModel):
@@ -174,7 +175,33 @@ class ForgotPasswordRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=100)
+    code: str | None = Field(None, min_length=6, max_length=6, pattern=r"^\d{6}$")
+    ticket: str | None = Field(None, min_length=20, max_length=128)
+    password: str = Field(..., min_length=12, max_length=256)
+
+    @model_validator(mode="after")
+    def needs_code_or_ticket(self):
+        if not self.code and not self.ticket:
+            raise ValueError("Send the reset code or the ticket from verifying it.")
+        return self
+
+
+class ResetCodeRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=100)
     code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class PasswordCodeVerifyRequest(BaseModel):
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class PasswordTicket(BaseModel):
+    ticket: str
+    expires_in: int = Field(..., ge=0)
+
+
+class ChangePasswordRequest(BaseModel):
+    ticket: str = Field(..., min_length=20, max_length=128)
     password: str = Field(..., min_length=12, max_length=256)
 
 
@@ -196,6 +223,7 @@ class AdminResponse(BaseModel):
     email: str | None = None
     avatar_url: str | None = None
     must_change_password: bool = False
+    password_changed_at: datetime | None = None
 
 
 class PermissionResponse(BaseModel):

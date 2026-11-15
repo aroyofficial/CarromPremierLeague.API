@@ -1,7 +1,11 @@
+import logging
 import secrets
+import threading
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
+
+logger = logging.getLogger("cpl.mail")
 
 from core.permissions import (
     ALL_CODES,
@@ -21,12 +25,15 @@ from schemas.auth_schema import (
     AdminPermissionsUpdate,
     AdminResponse,
     AdminUpdateRequest,
+    ChangePasswordRequest,
     LoginRequest,
     MfaStatus,
     MfaVerifyRequest,
     PasskeyOptionsResponse,
     PasskeyRegisterRequest,
     PasskeyResponse,
+    PasswordTicket,
+    ResetCodeRequest,
     ResetPasswordRequest,
     TokenResponse,
     TotpSetupResponse,
@@ -35,7 +42,7 @@ from core import totp
 from core.config import settings
 from core.secret_box import seal, unseal
 from services import passkeys
-from services.admin_codes import MAX_PER_HOUR, MemoryCodeStore, _utcnow
+from services.admin_codes import CODE_MINUTES, MAX_PER_HOUR, TICKET_PURPOSE, MemoryCodeStore, _utcnow
 from services.admin_mfa import MAX_CHALLENGE_ATTEMPTS, MemoryMfaStore
 from services.admin_sessions import MemorySessionStore
 from services.mailer import MailError, MemoryMailer
@@ -523,6 +530,7 @@ class AuthService:
                 "password_hash": password_hash,
                 "password_salt": password_salt,
                 "password_iterations": PASSWORD_ITERATIONS,
+                "password_changed_at": _utcnow(),
                 "increment_token_version": True,
             })
             if existing.must_change_password:
@@ -539,7 +547,7 @@ class AuthService:
         if ends_session:
             self.sessions.clear(admin_id)
         if password_changed and updated and updated.email:
-            self._send(lambda: self.mailer.password_changed(updated, activated), None)
+            self._send(lambda: self.mailer.password_changed(updated, activated, "profile"), None)
         return self.get_admin(admin_id)
 
     def request_email_code(self, admin_id: int, email: str, current_admin: AdminResponse) -> None:
@@ -568,29 +576,66 @@ class AuthService:
         if admin:
             self._issue_code(admin, "password_reset", admin.email)
 
-    def reset_password(self, request: ResetPasswordRequest) -> None:
-        username = self._normalize_username(request.username)
-        record = self.repository.get_credentials_by_username(username)
+    def _reset_record(self, username: str) -> dict:
+        record = self.repository.get_credentials_by_username(self._normalize_username(username))
         if not record or not record.get("Email"):
             raise HTTPException(status_code=400, detail="That reset code is not valid.")
         if not record["IsActive"] and not record.get("MustChangePassword"):
             raise HTTPException(status_code=400, detail="That reset code is not valid.")
+        return record
+
+    def _ticket(self, admin_id: int, email: str) -> PasswordTicket:
+        return PasswordTicket(
+            ticket=self.codes.issue(admin_id, TICKET_PURPOSE, email),
+            expires_in=CODE_MINUTES * 60,
+        )
+
+    def verify_reset_code(self, request: ResetCodeRequest) -> PasswordTicket:
+        record = self._reset_record(request.username)
         if not self.codes.verify(record["Id"], "password_reset", record["Email"], request.code):
             raise HTTPException(status_code=400, detail="That reset code is not valid.")
-        password_hash, password_salt = hash_password(request.password)
+        return self._ticket(record["Id"], record["Email"])
+
+    def reset_password(self, request: ResetPasswordRequest) -> None:
+        record = self._reset_record(request.username)
+        if request.ticket:
+            accepted = self.codes.verify(record["Id"], TICKET_PURPOSE, record["Email"], request.ticket)
+            detail = "This reset expired. Ask for a new code."
+        else:
+            accepted = self.codes.verify(record["Id"], "password_reset", record["Email"], request.code or "")
+            detail = "That reset code is not valid."
+        if not accepted:
+            raise HTTPException(status_code=400, detail=detail)
+        self._write_password(record["Id"], request.password, bool(record.get("MustChangePassword")), "reset")
+
+    def verify_password_code(self, admin: AdminResponse, code: str) -> PasswordTicket:
+        if not admin.email:
+            raise HTTPException(status_code=400, detail="Add an email address to your profile first.")
+        if not self.codes.verify(admin.id, self._password_purpose(admin), admin.email, code):
+            raise HTTPException(status_code=400, detail="That code is not right. Check the latest email or send a new code.")
+        return self._ticket(admin.id, admin.email)
+
+    def change_password(self, admin: AdminResponse, request: ChangePasswordRequest) -> None:
+        if not admin.email or not self.codes.verify(admin.id, TICKET_PURPOSE, admin.email, request.ticket):
+            raise HTTPException(status_code=400, detail="This password change expired. Send a new code and try again.")
+        self._write_password(admin.id, request.password, admin.must_change_password, "profile")
+
+    def _write_password(self, admin_id: int, password: str, activates: bool, via: str) -> None:
+        password_hash, password_salt = hash_password(password)
         changes = {
             "password_hash": password_hash,
             "password_salt": password_salt,
             "password_iterations": PASSWORD_ITERATIONS,
+            "password_changed_at": _utcnow(),
             "increment_token_version": True,
         }
-        if record.get("MustChangePassword"):
+        if activates:
             changes["is_active"] = True
             changes["must_change_password"] = False
-        updated = self.repository.update(record["Id"], changes)
-        self.sessions.clear(record["Id"])
+        updated = self.repository.update(admin_id, changes)
+        self.sessions.clear(admin_id)
         if updated and updated.email:
-            self._send(lambda: self.mailer.password_changed(updated, bool(record.get("MustChangePassword"))), None)
+            self._send(lambda: self.mailer.password_changed(updated, activates, via), None)
 
     def delete_admin(self, admin_id: int, current_admin: AdminResponse) -> bool:
         existing = self.repository.get_by_id(admin_id)
@@ -685,6 +730,10 @@ class AuthService:
         self._send(lambda: self.mailer.code(admin, purpose, code, destination), None)
 
     def _send(self, action, rollback_id: int | None) -> None:
+        # Live mail goes out after the response. The page waits only for the code to be saved.
+        if getattr(self.mailer, "defer", False):
+            threading.Thread(target=self._send_quietly, args=(action,), daemon=True, name="cpl-mail").start()
+            return
         try:
             action()
         except MailError:
@@ -698,3 +747,10 @@ class AuthService:
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="The change was saved, but the email could not be sent.",
             )
+
+    @staticmethod
+    def _send_quietly(action) -> None:
+        try:
+            action()
+        except MailError:
+            logger.warning("Email could not be sent")

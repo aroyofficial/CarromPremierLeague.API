@@ -13,6 +13,7 @@ import smtplib
 import ssl
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import formataddr
 
@@ -196,8 +197,11 @@ class Mailer:
         )
         return self._deliver(admin.email, values["subject"], values, text)
 
-    def password_changed(self, admin, activated: bool) -> OutboundMail:
+    def password_changed(self, admin, activated: bool, via: str = "profile") -> OutboundMail:
         values = self._base(admin, "Your admin password was changed")
+        changed_at = getattr(admin, "password_changed_at", None) or datetime.now(timezone.utc)
+        when = f"{changed_at.strftime('%d %b %Y, %H:%M')} UTC"
+        how = "Reset with an email code from the sign-in page" if via == "reset" else "Changed from My profile after an email code"
         if activated:
             values.update({
                 "headline": "Your account is now active",
@@ -212,9 +216,17 @@ class Mailer:
                 "intro": "The password for this admin account was changed. Existing sign-ins have been signed out.",
                 "note": "If you did not expect this, reset the password from the sign-in page.",
             })
-        values["details"] = _details([("Username", admin.username), ("Email", admin.email or "")])
+        values["details"] = _details([
+            ("Username", admin.username),
+            ("When", when),
+            ("How", how),
+        ])
         values["action"] = "Open the sign-in page"
-        text = f"Hello {values['given_name']},\n\n{values['intro']}\n\n{values['note']}\n{values['login_url']}\n"
+        text = (
+            f"Hello {values['given_name']},\n\n{values['intro']}\n\n"
+            f"Username: {admin.username}\nWhen: {when}\nHow: {how}\n\n"
+            f"{values['note']}\n{values['login_url']}\n"
+        )
         return self._deliver(admin.email, values["subject"], values, text)
 
     def code(self, admin, purpose: str, code: str, destination: str) -> OutboundMail:
@@ -280,6 +292,7 @@ class SmtpMailer(Mailer):
     """Direct SMTP. Render's free plan blocks ports 25, 465 and 587, so use an HTTPS transport there."""
 
     transport = "smtp"
+    defer = True
 
     def __init__(self, config=None):
         self._settings = config or settings
@@ -311,6 +324,8 @@ class SmtpMailer(Mailer):
 
 class HttpMailer(Mailer):
     """Sends through an email provider's HTTPS API, which works where outbound SMTP is blocked."""
+
+    defer = True
 
     def __init__(self, provider: str, config=None, client: httpx.Client | None = None):
         self.transport = provider
