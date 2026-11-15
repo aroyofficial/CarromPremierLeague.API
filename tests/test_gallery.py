@@ -297,6 +297,20 @@ class GalleryRuleTests(unittest.TestCase):
     def test_png_pixel_size_is_read_from_the_header(self):
         self.assertEqual(image_pixel_size(_png(640, 480)), (640, 480))
 
+    def test_item_can_be_saved_with_no_season(self):
+        photo = self._link(url="https://cdn.example/unassigned.jpg", seasons="")
+        self.assertEqual(photo.season_ids, [])
+        listed = [item.id for item in self.service.admin_page(None, "all", None, None, 24).items]
+        self.assertIn(photo.id, listed)
+        assigned = self._link()
+        cleared = self.service.update(
+            assigned.id,
+            GalleryUpdateRequest(season_ids=[]),
+            self.curator,
+            {"season_ids"},
+        )
+        self.assertEqual(cleared.season_ids, [])
+
     def test_new_photo_is_a_draft_and_a_link_is_not_deleted(self):
         photo = self._link()
         self.assertFalse(photo.is_published)

@@ -315,7 +315,7 @@ class GalleryService:
         height: int | None,
         taken_on: date | None,
     ) -> GalleryPhoto:
-        seasons = self._seasons(season_ids)
+        seasons = self._seasons(season_ids, allow_empty=True)
         filename = getattr(file, "filename", None) if file is not None else None
         link = (url or "").strip()
         if filename and link:
@@ -386,7 +386,7 @@ class GalleryService:
             fields["IsPublished"] = 1 if payload.is_published else 0
         seasons = None
         if "season_ids" in provided:
-            seasons = self._seasons(payload.season_ids or [])
+            seasons = self._seasons(payload.season_ids or [], allow_empty=True)
         if not fields and seasons is None:
             raise HTTPException(status_code=400, detail="Nothing to change.")
         self.repository.update(item_id, fields, admin.id)
@@ -488,15 +488,19 @@ class GalleryService:
             season_ids=season_ids,
         )
 
-    def _seasons(self, raw) -> list[int]:
+    def _seasons(self, raw, *, allow_empty: bool = False) -> list[int]:
         if isinstance(raw, str):
             parts = [part.strip() for part in raw.split(",") if part.strip()]
-            if not parts or any(not part.isdigit() for part in parts):
+            if any(not part.isdigit() for part in parts):
                 raise HTTPException(status_code=400, detail="Choose a season for this photo.")
             season_ids = [int(part) for part in parts]
         else:
             season_ids = [int(part) for part in (raw or [])]
         season_ids = list(dict.fromkeys(season_ids))
+        if not season_ids and allow_empty:
+            return []
+        if not season_ids and isinstance(raw, str):
+            raise HTTPException(status_code=400, detail="Choose a season for this photo.")
         if not season_ids or len(season_ids) > _MAX_SEASONS:
             raise HTTPException(status_code=400, detail=f"Choose between 1 and {_MAX_SEASONS} seasons.")
         known = self.repository.known_seasons(season_ids)

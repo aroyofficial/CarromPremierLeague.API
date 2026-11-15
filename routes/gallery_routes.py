@@ -87,7 +87,7 @@ def create_gallery(
     admin: AdminResponse = Depends(require_permission("gallery.create")),
     file: UploadFile | None = File(None),
     url: str | None = Form(None),
-    season_ids: str = Form(...),
+    season_ids: str | None = Form(None),
     caption: str | None = Form(None),
     alt_text: str | None = Form(None),
     width: int | None = Form(None),
