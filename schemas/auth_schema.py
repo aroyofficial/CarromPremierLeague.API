@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -18,6 +18,9 @@ class TokenResponse(BaseModel):
     must_change_password: bool = False
     pending: bool = False
     request_id: str | None = None
+    mfa_required: bool = False
+    mfa_token: str | None = None
+    mfa_methods: list[str] = Field(default_factory=list)
 
 
 class LogoutRequest(BaseModel):
@@ -39,7 +42,7 @@ class AdminProfileFields(BaseModel):
     date_of_birth: date | None = None
     gender: Literal["female", "male", "other"] | None = None
     phone_code: str | None = Field(None, max_length=8, pattern=r"^\+[1-9]\d{0,3}$")
-    phone_number: str | None = Field(None, max_length=20, pattern=r"^\d{6,15}$")
+    phone_number: str | None = Field(None, max_length=20)
     email: str | None = Field(None, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
     @field_validator("first_name", "last_name", "phone_code", "phone_number", "email", mode="before")
@@ -62,6 +65,13 @@ class AdminProfileFields(BaseModel):
     @classmethod
     def normalize_email(cls, value):
         return value.lower() if isinstance(value, str) else value
+
+    @field_validator("phone_number")
+    @classmethod
+    def ten_digit_number(cls, value):
+        if value is not None and not (len(value) == 10 and value.isdigit()):
+            raise ValueError("Contact number must be exactly 10 digits.")
+        return value
 
     @field_validator("date_of_birth")
     @classmethod
@@ -93,6 +103,60 @@ class AdminUpdateRequest(AdminProfileFields):
     password: str | None = Field(None, min_length=12, max_length=256)
     is_active: bool | None = None
     email_code: str | None = Field(None, min_length=6, max_length=6, pattern=r"^\d{6}$")
+    password_code: str | None = Field(None, min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class MfaTokenRequest(BaseModel):
+    mfa_token: str = Field(..., min_length=16, max_length=64)
+
+
+class MfaVerifyRequest(MfaTokenRequest):
+    method: Literal["email", "totp", "passkey"]
+    code: str | None = Field(None, min_length=6, max_length=6, pattern=r"^\d{6}$")
+    credential: dict | None = None
+
+
+class PasskeyResponse(BaseModel):
+    id: int
+    label: str
+    created_at: datetime
+    last_used_at: datetime | None = None
+
+
+class MfaStatus(BaseModel):
+    email_enabled: bool
+    email_available: bool
+    totp_enabled: bool
+    passkeys: list[PasskeyResponse]
+
+
+class TotpSetupResponse(BaseModel):
+    secret: str
+    otpauth_uri: str
+
+
+class TotpConfirmRequest(BaseModel):
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class EmailFactorRequest(BaseModel):
+    enabled: bool
+
+
+class PasskeyOptionsResponse(BaseModel):
+    challenge_id: str
+    options: dict
+
+
+class PasskeyRegisterRequest(BaseModel):
+    challenge_id: str = Field(..., min_length=16, max_length=64)
+    credential: dict
+    label: str = Field(..., min_length=1, max_length=100)
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def trim_label(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class EmailCodeRequest(BaseModel):

@@ -5,13 +5,22 @@ inserted, except the prebuilt details table. CSS animation is included for
 clients that keep a style block; the layout still reads when that is removed.
 """
 
+import base64
 import html
+import logging
 import re
 import smtplib
+import ssl
+import time
 from dataclasses import dataclass
 from email.message import EmailMessage
+from email.utils import formataddr
+
+import httpx
 
 from core.config import settings
+
+logger = logging.getLogger("cpl.mail")
 
 _PLACEHOLDER = re.compile(r"\{\{\s*([a-z0-9_]+)\s*\}\}")
 _SAFE = {"details"}
@@ -116,6 +125,35 @@ _LAYOUT = """<!DOCTYPE html>
 """
 
 
+_CODE_COPY = {
+    "email_change": (
+        "Confirm your admin email",
+        "Confirm this email address",
+        "Enter this code to save the new email address on the admin account. It expires in 10 minutes.",
+    ),
+    "password_reset": (
+        "Reset your admin password",
+        "Reset your password",
+        "Enter this code on the sign-in page with the username for this account. It expires in 10 minutes.",
+    ),
+    "password_change": (
+        "Confirm your new admin password",
+        "Confirm the password change",
+        "Enter this code to confirm the new password for this admin account. It expires in 10 minutes.",
+    ),
+    "activation": (
+        "Verify your admin email",
+        "Verify your email to activate the account",
+        "Enter this code to verify this email address. After you set your own password, the account is activated. It expires in 10 minutes.",
+    ),
+    "login": (
+        "Your admin sign-in code",
+        "Finish signing in",
+        "Enter this code on the sign-in page to finish signing in. It expires in 10 minutes.",
+    ),
+}
+
+
 def _given_name(first_name: str | None, username: str) -> str:
     return first_name.strip() if first_name and first_name.strip() else username
 
@@ -180,16 +218,8 @@ class Mailer:
         return self._deliver(admin.email, values["subject"], values, text)
 
     def code(self, admin, purpose: str, code: str, destination: str) -> OutboundMail:
-        if purpose == "email_change":
-            subject = "Confirm your admin email"
-            headline = "Confirm this email address"
-            intro = "Enter this code to save the new email address on the admin account. It expires in 10 minutes."
-            preheader = f"Your email code is {code}."
-        else:
-            subject = "Reset your admin password"
-            headline = "Reset your password"
-            intro = "Enter this code on the sign-in page with the username for this account. It expires in 10 minutes."
-            preheader = f"Your reset code is {code}."
+        subject, headline, intro = _CODE_COPY.get(purpose, _CODE_COPY["password_reset"])
+        preheader = f"Your code is {code}."
         values = self._base(admin, subject)
         values.update({
             "email": destination,
@@ -236,30 +266,188 @@ class MemoryMailer(Mailer):
         self.sent.append(mail)
 
 
+def _mime(mail: OutboundMail, sender: str, name: str) -> EmailMessage:
+    message = EmailMessage()
+    message["From"] = formataddr((name, sender))
+    message["To"] = mail.to
+    message["Subject"] = mail.subject
+    message.set_content(mail.text)
+    message.add_alternative(mail.html, subtype="html")
+    return message
+
+
 class SmtpMailer(Mailer):
-    def __init__(self):
-        self._settings = settings
+    """Direct SMTP. Render's free plan blocks ports 25, 465 and 587, so use an HTTPS transport there."""
+
+    transport = "smtp"
+
+    def __init__(self, config=None):
+        self._settings = config or settings
 
     @property
     def configured(self) -> bool:
-        return bool(self._settings.SMTP_HOST and self._settings.SMTP_FROM)
+        return bool(self._settings.SMTP_HOST and self._settings.MAIL_FROM)
 
     def send(self, mail: OutboundMail) -> None:
         if not self.configured:
             raise MailError("Email is not configured.")
-        message = EmailMessage()
-        name = self._settings.SMTP_FROM_NAME or "Carrom Premier League"
-        message["From"] = f"{name} <{self._settings.SMTP_FROM}>"
-        message["To"] = mail.to
-        message["Subject"] = mail.subject
-        message.set_content(mail.text)
-        message.add_alternative(mail.html, subtype="html")
+        message = _mime(mail, self._settings.MAIL_FROM, self._settings.SMTP_FROM_NAME)
+        host, port = self._settings.SMTP_HOST, self._settings.SMTP_PORT
         try:
-            with smtplib.SMTP(self._settings.SMTP_HOST, self._settings.SMTP_PORT, timeout=20) as client:
-                if self._settings.SMTP_STARTTLS:
-                    client.starttls()
+            if port == 465:
+                client = smtplib.SMTP_SSL(host, port, timeout=20, context=ssl.create_default_context())
+            else:
+                client = smtplib.SMTP(host, port, timeout=20)
+            with client:
+                if port != 465 and self._settings.SMTP_STARTTLS:
+                    client.starttls(context=ssl.create_default_context())
                 if self._settings.SMTP_USERNAME:
                     client.login(self._settings.SMTP_USERNAME, self._settings.SMTP_PASSWORD or "")
                 client.send_message(message)
         except (OSError, smtplib.SMTPException) as error:
+            logger.warning("SMTP delivery to %s:%s failed: %s: %s", host, port, type(error).__name__, error)
             raise MailError("The email could not be sent.") from error
+
+
+class HttpMailer(Mailer):
+    """Sends through an email provider's HTTPS API, which works where outbound SMTP is blocked."""
+
+    def __init__(self, provider: str, config=None, client: httpx.Client | None = None):
+        self.transport = provider
+        self._settings = config or settings
+        self._client = client
+        self._gmail_token: tuple[str, float] | None = None
+
+    @property
+    def configured(self) -> bool:
+        if not self._settings.MAIL_FROM:
+            return False
+        if self.transport == "gmail":
+            return bool(
+                self._settings.GMAIL_CLIENT_ID
+                and self._settings.GMAIL_CLIENT_SECRET
+                and self._settings.GMAIL_REFRESH_TOKEN
+            )
+        return bool(self._settings.MAIL_API_KEY)
+
+    def send(self, mail: OutboundMail) -> None:
+        if not self.configured:
+            raise MailError("Email is not configured.")
+        try:
+            response = getattr(self, f"_send_{self.transport}")(mail)
+        except httpx.HTTPError as error:
+            logger.warning("%s delivery failed: %s: %s", self.transport, type(error).__name__, error)
+            raise MailError("The email could not be sent.") from error
+        if response.status_code >= 300:
+            logger.warning(
+                "%s rejected the email (HTTP %s): %s", self.transport, response.status_code, response.text[:300]
+            )
+            raise MailError("The email could not be sent.")
+
+    def _post(self, url: str, **kwargs) -> httpx.Response:
+        if self._client is not None:
+            return self._client.post(url, **kwargs)
+        with httpx.Client(timeout=20) as client:
+            return client.post(url, **kwargs)
+
+    def _sender(self) -> tuple[str, str]:
+        return self._settings.MAIL_FROM, self._settings.SMTP_FROM_NAME
+
+    def _send_brevo(self, mail: OutboundMail) -> httpx.Response:
+        sender, name = self._sender()
+        return self._post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={"api-key": self._settings.MAIL_API_KEY, "accept": "application/json"},
+            json={
+                "sender": {"email": sender, "name": name},
+                "to": [{"email": mail.to}],
+                "subject": mail.subject,
+                "htmlContent": mail.html,
+                "textContent": mail.text,
+            },
+        )
+
+    def _send_resend(self, mail: OutboundMail) -> httpx.Response:
+        sender, name = self._sender()
+        return self._post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {self._settings.MAIL_API_KEY}"},
+            json={
+                "from": formataddr((name, sender)),
+                "to": [mail.to],
+                "subject": mail.subject,
+                "html": mail.html,
+                "text": mail.text,
+            },
+        )
+
+    def _send_sendgrid(self, mail: OutboundMail) -> httpx.Response:
+        sender, name = self._sender()
+        return self._post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={"Authorization": f"Bearer {self._settings.MAIL_API_KEY}"},
+            json={
+                "personalizations": [{"to": [{"email": mail.to}]}],
+                "from": {"email": sender, "name": name},
+                "subject": mail.subject,
+                "content": [
+                    {"type": "text/plain", "value": mail.text},
+                    {"type": "text/html", "value": mail.html},
+                ],
+            },
+        )
+
+    def _send_gmail(self, mail: OutboundMail) -> httpx.Response:
+        sender, name = self._sender()
+        raw = base64.urlsafe_b64encode(_mime(mail, sender, name).as_bytes()).decode("ascii")
+        return self._post(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+            headers={"Authorization": f"Bearer {self._gmail_access_token()}"},
+            json={"raw": raw},
+        )
+
+    def _gmail_access_token(self) -> str:
+        if self._gmail_token and self._gmail_token[1] > time.time() + 60:
+            return self._gmail_token[0]
+        response = self._post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": self._settings.GMAIL_CLIENT_ID,
+                "client_secret": self._settings.GMAIL_CLIENT_SECRET,
+                "refresh_token": self._settings.GMAIL_REFRESH_TOKEN,
+            },
+        )
+        if response.status_code >= 300:
+            logger.warning("Google refused the Gmail refresh token (HTTP %s): %s", response.status_code, response.text[:300])
+            raise MailError("The email could not be sent.")
+        body = response.json()
+        self._gmail_token = (body["access_token"], time.time() + int(body.get("expires_in", 3600)))
+        return self._gmail_token[0]
+
+
+_KEY_PREFIXES = (("xkeysib-", "brevo"), ("re_", "resend"), ("SG.", "sendgrid"))
+HTTP_PROVIDERS = ("brevo", "resend", "sendgrid", "gmail")
+
+
+def resolve_provider(config=None) -> str:
+    config = config or settings
+    if config.MAIL_PROVIDER in HTTP_PROVIDERS + ("smtp",):
+        return config.MAIL_PROVIDER
+    if config.GMAIL_REFRESH_TOKEN:
+        return "gmail"
+    if config.MAIL_API_KEY:
+        for prefix, provider in _KEY_PREFIXES:
+            if config.MAIL_API_KEY.startswith(prefix):
+                return provider
+    return "smtp"
+
+
+_shared: dict[str, Mailer] = {}
+
+
+def get_mailer() -> Mailer:
+    provider = resolve_provider()
+    if provider not in _shared:
+        _shared[provider] = SmtpMailer() if provider == "smtp" else HttpMailer(provider)
+    return _shared[provider]

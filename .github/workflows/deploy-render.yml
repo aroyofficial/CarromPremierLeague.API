@@ -60,6 +60,12 @@ jobs:
           CPL_SMTP_PASSWORD: ${{ secrets.CPL_SMTP_PASSWORD }}
           CPL_SMTP_FROM: ${{ secrets.CPL_SMTP_FROM }}
           CPL_SMTP_FROM_NAME: ${{ secrets.CPL_SMTP_FROM_NAME }}
+          CPL_MAIL_PROVIDER: ${{ secrets.CPL_MAIL_PROVIDER }}
+          CPL_MAIL_API_KEY: ${{ secrets.CPL_MAIL_API_KEY }}
+          CPL_MAIL_FROM: ${{ secrets.CPL_MAIL_FROM }}
+          CPL_GMAIL_CLIENT_ID: ${{ secrets.CPL_GMAIL_CLIENT_ID }}
+          CPL_GMAIL_CLIENT_SECRET: ${{ secrets.CPL_GMAIL_CLIENT_SECRET }}
+          CPL_GMAIL_REFRESH_TOKEN: ${{ secrets.CPL_GMAIL_REFRESH_TOKEN }}
           CPL_PUBLIC_WEB_URL: ${{ vars.CPL_PUBLIC_WEB_URL }}
           CPL_GEMINI_MODEL: ${{ vars.CPL_GEMINI_MODEL }}
           CPL_GROQ_MODEL: ${{ vars.CPL_GROQ_MODEL }}
@@ -109,7 +115,7 @@ jobs:
             echo "::warning::No GEMINI_API_KEY, GROQ_API_KEY or OPENROUTER_API_KEY secret is set; the Striker assistant keeps any key already on Render."
           fi
           mail_keys=0
-          for pair in CPL_SMTP_HOST:CPL_SMTP_HOST CPL_SMTP_PORT:CPL_SMTP_PORT CPL_SMTP_USERNAME:CPL_SMTP_USERNAME CPL_SMTP_PASSWORD:CPL_SMTP_PASSWORD CPL_SMTP_FROM:CPL_SMTP_FROM CPL_SMTP_FROM_NAME:CPL_SMTP_FROM_NAME CPL_PUBLIC_WEB_URL:CPL_PUBLIC_WEB_URL; do
+          for pair in CPL_SMTP_HOST:CPL_SMTP_HOST CPL_SMTP_PORT:CPL_SMTP_PORT CPL_SMTP_USERNAME:CPL_SMTP_USERNAME CPL_SMTP_PASSWORD:CPL_SMTP_PASSWORD CPL_SMTP_FROM:CPL_SMTP_FROM CPL_SMTP_FROM_NAME:CPL_SMTP_FROM_NAME CPL_MAIL_PROVIDER:CPL_MAIL_PROVIDER CPL_MAIL_API_KEY:CPL_MAIL_API_KEY CPL_MAIL_FROM:CPL_MAIL_FROM CPL_GMAIL_CLIENT_ID:CPL_GMAIL_CLIENT_ID CPL_GMAIL_CLIENT_SECRET:CPL_GMAIL_CLIENT_SECRET CPL_GMAIL_REFRESH_TOKEN:CPL_GMAIL_REFRESH_TOKEN CPL_PUBLIC_WEB_URL:CPL_PUBLIC_WEB_URL; do
             secret="${pair%%:*}"
             target="${pair##*:}"
             if [ -n "${!secret}" ]; then
@@ -118,7 +124,13 @@ jobs:
             fi
           done
           if [ "${mail_keys}" = "0" ]; then
-            echo "::warning::No SMTP secrets are set. Admin mail keeps whatever sender is already configured on Render."
+            echo "::warning::No mail secrets are set. Admin mail keeps whatever sender is already configured on Render."
+          fi
+          plan="$(curl -sS "https://api.render.com/v1/services/${RENDER_SERVICE_ID}" -H "Authorization: Bearer ${RENDER_API_KEY}" | jq -r '.serviceDetails.plan // empty')"
+          has_http_mail="$(curl -sS "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/env-vars?limit=100" -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            | jq -r '[.[].envVar.key] | map(select(. == "CPL_MAIL_API_KEY" or . == "CPL_GMAIL_REFRESH_TOKEN")) | length')"
+          if [ "${plan}" = "free" ] && [ "${has_http_mail}" = "0" ]; then
+            echo "::warning::This Render service is on the free plan, which blocks outbound SMTP (ports 25, 465, 587). Set CPL_MAIL_API_KEY (Brevo, Resend or SendGrid) or the CPL_GMAIL_* secrets so admin mail goes over HTTPS."
           fi
 
       - name: Ask Render to deploy this commit

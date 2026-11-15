@@ -22,22 +22,35 @@ from schemas.auth_schema import (
     AdminResponse,
     AdminUpdateRequest,
     LoginRequest,
+    MfaStatus,
+    MfaVerifyRequest,
+    PasskeyOptionsResponse,
+    PasskeyRegisterRequest,
+    PasskeyResponse,
     ResetPasswordRequest,
     TokenResponse,
+    TotpSetupResponse,
 )
+from core import totp
 from core.config import settings
+from core.secret_box import seal, unseal
+from services import passkeys
 from services.admin_codes import MAX_PER_HOUR, MemoryCodeStore, _utcnow
+from services.admin_mfa import MAX_CHALLENGE_ATTEMPTS, MemoryMfaStore
 from services.admin_sessions import MemorySessionStore
 from services.mailer import MailError, MemoryMailer
 
+TOTP_ISSUER = "Carrom Premier League"
+
 
 class AuthService:
-    def __init__(self, repository: AdminRepository, permissions: PermissionRepository, mailer=None, codes=None, sessions=None):
+    def __init__(self, repository: AdminRepository, permissions: PermissionRepository, mailer=None, codes=None, sessions=None, mfa=None):
         self.repository = repository
         self.permissions = permissions
         self.mailer = mailer if mailer is not None else MemoryMailer()
         self.codes = codes if codes is not None else MemoryCodeStore()
         self.sessions = sessions if sessions is not None else MemorySessionStore()
+        self.mfa = mfa if mfa is not None else MemoryMfaStore()
 
     @staticmethod
     def _normalize_username(username: str) -> str:
@@ -93,9 +106,16 @@ class AuthService:
         must_change = bool(record.get("MustChangePassword"))
         if not record["IsActive"] and not must_change:
             raise self._invalid_login()
+        methods = [] if must_change else self._mfa_methods(record["Id"], record.get("Email"))
+        if methods:
+            challenge = self.mfa.create_challenge(record["Id"], "login", request.device_id, request.device_label)
+            return TokenResponse(mfa_required=True, mfa_token=challenge.id, mfa_methods=methods)
+        return self._start_session(record, request.device_id, request.device_label, must_change)
+
+    def _start_session(self, record: dict, device_id: str | None, device_label: str | None, must_change: bool) -> TokenResponse:
         now = _utcnow()
-        if request.device_id:
-            waiting = self.sessions.begin(record["Id"], request.device_id, request.device_label, now)
+        if device_id:
+            waiting = self.sessions.begin(record["Id"], device_id, device_label, now)
             if waiting is not None:
                 return TokenResponse(
                     access_token="",
@@ -105,11 +125,11 @@ class AuthService:
                     request_id=waiting.id,
                 )
         token = self._issue_token(record)
-        if request.device_id:
+        if device_id:
             self.sessions.activate(
                 record["Id"],
-                request.device_id,
-                request.device_label,
+                device_id,
+                device_label,
                 now + timedelta(minutes=settings.AUTH_TOKEN_EXPIRE_MINUTES),
             )
         return TokenResponse(
@@ -117,6 +137,148 @@ class AuthService:
             expires_in=settings.AUTH_TOKEN_EXPIRE_MINUTES * 60,
             must_change_password=must_change,
         )
+
+    def _mfa_methods(self, admin_id: int, email: str | None) -> list[str]:
+        current = self.mfa.settings(admin_id)
+        methods = []
+        if self.mfa.passkeys(admin_id):
+            methods.append("passkey")
+        if current.totp_secret:
+            methods.append("totp")
+        if current.email and email:
+            methods.append("email")
+        return methods
+
+    def _login_challenge(self, mfa_token: str):
+        challenge = self.mfa.open_challenge(mfa_token, "login")
+        if challenge is None:
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="That sign-in expired. Sign in again.")
+        admin = self.repository.get_by_id(challenge.admin_id)
+        record = self.repository.get_credentials_by_username(admin.username) if admin else None
+        if not record or not record["IsActive"]:
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="That sign-in expired. Sign in again.")
+        return challenge, admin, record
+
+    def send_login_code(self, mfa_token: str) -> None:
+        challenge, admin, record = self._login_challenge(mfa_token)
+        if "email" not in self._mfa_methods(admin.id, admin.email):
+            raise HTTPException(status_code=400, detail="Email codes are not turned on for this account.")
+        self._issue_code(admin, "login", admin.email)
+
+    def passkey_login_options(self, mfa_token: str, origin: str | None) -> dict:
+        challenge, admin, _ = self._login_challenge(mfa_token)
+        keys = self.mfa.passkeys(admin.id)
+        if not keys:
+            raise HTTPException(status_code=400, detail="This account has no passkey.")
+        options, value = passkeys.authentication_options(origin, [key.credential_id for key in keys])
+        self.mfa.set_challenge_value(challenge.id, value)
+        return options
+
+    def verify_mfa(self, request: MfaVerifyRequest, origin: str | None) -> TokenResponse:
+        challenge, admin, record = self._login_challenge(request.mfa_token)
+        if request.method not in self._mfa_methods(admin.id, admin.email):
+            raise HTTPException(status_code=400, detail="That sign-in method is not turned on for this account.")
+        if not self._second_factor_passes(request, challenge, admin, origin):
+            attempts = self.mfa.count_failure(challenge.id)
+            if attempts >= MAX_CHALLENGE_ATTEMPTS:
+                raise HTTPException(status_code=status.HTTP_410_GONE, detail="Too many tries. Sign in again.")
+            detail = "That passkey was not accepted." if request.method == "passkey" else "That code is not right."
+            raise HTTPException(status_code=400, detail=detail)
+        self.mfa.consume(challenge.id)
+        return self._start_session(record, challenge.device_id, challenge.device_label, False)
+
+    def _second_factor_passes(self, request: MfaVerifyRequest, challenge, admin: AdminResponse, origin: str | None) -> bool:
+        if request.method == "email":
+            return self.codes.verify(admin.id, "login", admin.email, request.code or "")
+        if request.method == "totp":
+            current = self.mfa.settings(admin.id)
+            step = totp.match(unseal(current.totp_secret), request.code or "", last_step=current.totp_last_step)
+            if step is None:
+                return False
+            self.mfa.update_settings(admin.id, totp_last_step=step)
+            return True
+        credential = request.credential or {}
+        stored = self.mfa.passkey_by_credential(str(credential.get("id") or credential.get("rawId") or ""))
+        if stored is None or stored.admin_id != admin.id or not challenge.challenge:
+            return False
+        try:
+            sign_count = passkeys.verify_authentication(origin, credential, challenge.challenge, stored.public_key, stored.sign_count)
+        except HTTPException:
+            return False
+        self.mfa.touch_passkey(stored.id, sign_count)
+        return True
+
+    def mfa_status(self, admin: AdminResponse) -> MfaStatus:
+        current = self.mfa.settings(admin.id)
+        return MfaStatus(
+            email_enabled=bool(current.email and admin.email),
+            email_available=bool(admin.email),
+            totp_enabled=bool(current.totp_secret),
+            passkeys=[
+                PasskeyResponse(id=key.id, label=key.label, created_at=key.created_at, last_used_at=key.last_used_at)
+                for key in self.mfa.passkeys(admin.id)
+            ],
+        )
+
+    def set_email_factor(self, admin: AdminResponse, enabled: bool) -> MfaStatus:
+        if enabled and not admin.email:
+            raise HTTPException(status_code=400, detail="Add an email address to your profile first.")
+        self.mfa.update_settings(admin.id, email=enabled)
+        return self.mfa_status(admin)
+
+    def start_totp(self, admin: AdminResponse) -> TotpSetupResponse:
+        secret = totp.new_secret()
+        self.mfa.update_settings(admin.id, totp_pending=seal(secret))
+        account = admin.email or admin.username
+        return TotpSetupResponse(secret=secret, otpauth_uri=totp.provisioning_uri(secret, account, TOTP_ISSUER))
+
+    def confirm_totp(self, admin: AdminResponse, code: str) -> MfaStatus:
+        current = self.mfa.settings(admin.id)
+        if not current.totp_pending:
+            raise HTTPException(status_code=400, detail="Start the authenticator setup again.")
+        step = totp.match(unseal(current.totp_pending), code)
+        if step is None:
+            raise HTTPException(status_code=400, detail="That code is not right. Check the time on your phone and try again.")
+        self.mfa.update_settings(admin.id, totp_secret=current.totp_pending, totp_pending=None, totp_last_step=step)
+        return self.mfa_status(admin)
+
+    def remove_totp(self, admin: AdminResponse) -> MfaStatus:
+        self.mfa.update_settings(admin.id, totp_secret=None, totp_pending=None, totp_last_step=None)
+        return self.mfa_status(admin)
+
+    def passkey_registration_options(self, admin: AdminResponse, origin: str | None) -> PasskeyOptionsResponse:
+        existing = [key.credential_id for key in self.mfa.passkeys(admin.id)]
+        options, value = passkeys.registration_options(origin, admin, existing)
+        challenge = self.mfa.create_challenge(admin.id, "passkey")
+        self.mfa.set_challenge_value(challenge.id, value)
+        return PasskeyOptionsResponse(challenge_id=challenge.id, options=options)
+
+    def register_passkey(self, admin: AdminResponse, request: PasskeyRegisterRequest, origin: str | None) -> MfaStatus:
+        challenge = self.mfa.open_challenge(request.challenge_id, "passkey")
+        if challenge is None or challenge.admin_id != admin.id or not challenge.challenge:
+            raise HTTPException(status_code=400, detail="That passkey request expired. Try again.")
+        self.mfa.consume(challenge.id)
+        credential_id, public_key, sign_count, transports = passkeys.verify_registration(
+            origin, request.credential, challenge.challenge
+        )
+        if self.mfa.passkey_by_credential(credential_id):
+            raise HTTPException(status_code=409, detail="That passkey is already saved.")
+        self.mfa.add_passkey(admin.id, credential_id, public_key, sign_count, request.label, transports)
+        return self.mfa_status(admin)
+
+    def remove_passkey(self, admin: AdminResponse, passkey_id: int) -> MfaStatus:
+        if not self.mfa.remove_passkey(admin.id, passkey_id):
+            raise HTTPException(status_code=404, detail="Passkey not found.")
+        return self.mfa_status(admin)
+
+    def request_password_code(self, admin: AdminResponse) -> None:
+        if not admin.email:
+            raise HTTPException(status_code=400, detail="Add an email address to your profile first.")
+        self._issue_code(admin, self._password_purpose(admin), admin.email)
+
+    @staticmethod
+    def _password_purpose(admin: AdminResponse) -> str:
+        return "activation" if admin.must_change_password else "password_change"
 
     def pending_login(self, admin: AdminResponse):
         return self.sessions.pending_for(admin.id, _utcnow())
@@ -305,14 +467,34 @@ class AuthService:
             raise HTTPException(status_code=404, detail="Admin user not found.")
         changes = request.model_dump(exclude_unset=True)
         email_code = changes.pop("email_code", None)
+        password_code = changes.pop("password_code", None)
         is_self = existing.id == current_admin.id
-        if existing.must_change_password and is_self and set(changes) != {"password"}:
-            raise HTTPException(
-                status_code=400,
-                detail="Change the temporary password to activate this account.",
-            )
-        if UPDATE_ADMINS not in current_admin.permissions and (not is_self or "is_active" in changes):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=denied_message([UPDATE_ADMINS]))
+        if not is_self:
+            if set(changes) - {"is_active"}:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admins can change only their own profile and password.",
+                )
+            if UPDATE_ADMINS not in current_admin.permissions:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=denied_message([UPDATE_ADMINS]))
+            if existing.must_change_password:
+                raise HTTPException(
+                    status_code=400,
+                    detail="This account activates itself after that admin verifies their email and sets a password.",
+                )
+        else:
+            if "is_active" in changes:
+                raise HTTPException(status_code=400, detail="You cannot switch your own account on or off.")
+            if existing.must_change_password and set(changes) != {"password"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Verify your email and set your own password to activate this account.",
+                )
+        if "password" in changes:
+            if not existing.email:
+                raise HTTPException(status_code=400, detail="Add an email address to your profile first.")
+            if not self.codes.verify(admin_id, self._password_purpose(existing), existing.email, password_code or ""):
+                raise HTTPException(status_code=400, detail="Enter the code sent to your email address.")
         if "email" in changes:
             if not changes["email"]:
                 raise HTTPException(status_code=400, detail="Email is required.")
@@ -334,7 +516,6 @@ class AuthService:
                 raise HTTPException(status_code=409, detail="Username already exists.")
             changes["username"] = username
         password_changed = "password" in changes
-        asked_to_activate = changes.get("is_active") is True
         activated = False
         if password_changed:
             password_hash, password_salt = hash_password(changes.pop("password"))
@@ -348,14 +529,7 @@ class AuthService:
                 changes["is_active"] = True
                 changes["must_change_password"] = False
                 activated = True
-        if asked_to_activate and existing.must_change_password and not activated:
-            raise HTTPException(
-                status_code=400,
-                detail="This account stays off until that admin changes the temporary password.",
-            )
-        if changes.get("is_active") is False:
-            if is_self:
-                raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
+        if changes.get("is_active") is False and not is_self:
             if self.repository.count_active() <= 1:
                 raise HTTPException(status_code=400, detail="At least one active admin is required.")
             self._ensure_other_manager(existing)
@@ -372,8 +546,11 @@ class AuthService:
         existing = self.repository.get_by_id(admin_id)
         if not existing:
             raise HTTPException(status_code=404, detail="Admin user not found.")
-        if existing.id != current_admin.id and UPDATE_ADMINS not in current_admin.permissions:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=denied_message([UPDATE_ADMINS]))
+        if existing.id != current_admin.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admins can change only their own profile and password.",
+            )
         if email == existing.email:
             raise HTTPException(status_code=400, detail="That is already the email address on this account.")
         owner = self.repository.find_email(email)

@@ -7,6 +7,19 @@ from pydantic import ValidationError
 from core.response import ApiResponse
 
 
+def _plain_errors(errors) -> list[dict]:
+    """Validator errors carry the raised exception in ctx, which JSON cannot encode."""
+    plain = []
+    for item in errors:
+        entry = dict(item)
+        if "ctx" in entry:
+            entry["ctx"] = {key: str(value) for key, value in entry["ctx"].items()}
+        if entry.get("type") == "value_error" and isinstance(entry.get("msg"), str):
+            entry["msg"] = entry["msg"].removeprefix("Value error, ")
+        plain.append(entry)
+    return plain
+
+
 def add_exception_handlers(app):
 
     @app.exception_handler(HTTPException)
@@ -33,12 +46,14 @@ def add_exception_handlers(app):
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        errors = _plain_errors(exc.errors())
+        custom = [item["msg"] for item in errors if item.get("type") == "value_error"]
         return JSONResponse(
             status_code=422,
             content=ApiResponse(
                 success=False,
-                message="Validation failed",
-                data=exc.errors()
+                message=custom[0] if custom else "Validation failed",
+                data=errors
             ).model_dump()
         )
 
@@ -49,7 +64,7 @@ def add_exception_handlers(app):
             content=ApiResponse(
                 success=False,
                 message="Response validation failed",
-                data=exc.errors()
+                data=_plain_errors(exc.errors())
             ).model_dump()
         )
 

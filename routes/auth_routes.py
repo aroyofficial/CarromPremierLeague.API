@@ -12,7 +12,6 @@ from core.permissions import (
     CREATE_ADMINS,
     DELETE_ADMINS,
     MANAGE_PERMISSIONS,
-    UPDATE_ADMINS,
     ROLES,
     SECTIONS,
     VIEW_ADMINS,
@@ -29,11 +28,19 @@ from schemas.auth_schema import (
     AdminResponse,
     AdminUpdateRequest,
     EmailCodeRequest,
+    EmailFactorRequest,
     ForgotPasswordRequest,
     LoginApproval,
     LoginRequest,
     LogoutRequest,
+    MfaStatus,
+    MfaTokenRequest,
+    MfaVerifyRequest,
+    PasskeyOptionsResponse,
+    PasskeyRegisterRequest,
     PendingLogin,
+    TotpConfirmRequest,
+    TotpSetupResponse,
     ResetPasswordRequest,
     PermissionAreaNode,
     PermissionNode,
@@ -44,9 +51,10 @@ from schemas.auth_schema import (
     TokenResponse,
 )
 from services.admin_codes import SqlCodeStore
+from services.admin_mfa import SqlMfaStore
 from services.auth_service import AuthService
 from services.admin_sessions import SqlSessionStore
-from services.mailer import SmtpMailer
+from services.mailer import get_mailer
 from services.media_service import MediaService
 
 
@@ -58,9 +66,10 @@ def get_service(db=Depends(get_db)) -> AuthService:
     return AuthService(
         AdminRepository(db),
         PermissionRepository(db),
-        mailer=SmtpMailer(),
+        mailer=get_mailer(),
         codes=SqlCodeStore(db),
         sessions=SqlSessionStore(db),
+        mfa=SqlMfaStore(db),
     )
 
 
@@ -72,16 +81,19 @@ def get_admin_media(
 
 
 def _can_edit_admin(admin_id: int, current: AdminResponse) -> None:
-    if current.id == admin_id or UPDATE_ADMINS in current.permissions:
+    if current.id == admin_id:
         return
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=denied_message([UPDATE_ADMINS]))
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admins can change only their own profile and password.",
+    )
 
 
 def _pending_password_allowed(request: Request, admin: AdminResponse) -> bool:
     path = request.url.path.rstrip("/") or "/"
     if request.method == "GET" and path == "/auth/me":
         return True
-    if path in {"/auth/login-request", "/auth/logout"}:
+    if path in {"/auth/login-request", "/auth/logout", "/auth/password-code"}:
         return True
     if path.startswith("/auth/login-request/"):
         return True
@@ -131,6 +143,79 @@ def login(request: LoginRequest, service: AuthService = Depends(get_service)):
         message="Login successful.",
         data=service.login(request),
     )
+
+
+@router.post("/auth/mfa/email-code", response_model=ApiResponse[bool], summary="Email a sign-in code")
+def mfa_email_code(body: MfaTokenRequest, service: AuthService = Depends(get_service)):
+    service.send_login_code(body.mfa_token)
+    return ApiResponse(success=True, message="A sign-in code was sent to your email address.", data=True)
+
+
+@router.post("/auth/mfa/passkey-options", response_model=ApiResponse[dict], summary="Passkey challenge for sign-in")
+def mfa_passkey_options(body: MfaTokenRequest, request: Request, service: AuthService = Depends(get_service)):
+    return ApiResponse(success=True, message=None, data=service.passkey_login_options(body.mfa_token, request.headers.get("origin")))
+
+
+@router.post("/auth/mfa/verify", response_model=ApiResponse[TokenResponse], summary="Finish sign-in with a second factor")
+def mfa_verify(body: MfaVerifyRequest, request: Request, service: AuthService = Depends(get_service)):
+    data = service.verify_mfa(body, request.headers.get("origin"))
+    return ApiResponse(success=True, message=None if data.pending else "Login successful.", data=data)
+
+
+@router.post("/auth/password-code", response_model=ApiResponse[bool], summary="Email a code before a password change")
+def password_code(admin: AdminResponse = Depends(get_current_admin), service: AuthService = Depends(get_service)):
+    service.request_password_code(admin)
+    return ApiResponse(success=True, message="A code was sent to your email address.", data=True)
+
+
+@router.get("/auth/mfa", response_model=ApiResponse[MfaStatus], summary="Your sign-in factors")
+def mfa_status(admin: AdminResponse = Depends(get_current_admin), service: AuthService = Depends(get_service)):
+    return ApiResponse(success=True, message=None, data=service.mfa_status(admin))
+
+
+@router.put("/auth/mfa/email", response_model=ApiResponse[MfaStatus], summary="Turn email sign-in codes on or off")
+def mfa_email(body: EmailFactorRequest, admin: AdminResponse = Depends(get_current_admin), service: AuthService = Depends(get_service)):
+    message = "Email sign-in codes are on." if body.enabled else "Email sign-in codes are off."
+    return ApiResponse(success=True, message=message, data=service.set_email_factor(admin, body.enabled))
+
+
+@router.post("/auth/mfa/totp", response_model=ApiResponse[TotpSetupResponse], summary="Start authenticator app setup")
+def mfa_totp_start(admin: AdminResponse = Depends(get_current_admin), service: AuthService = Depends(get_service)):
+    return ApiResponse(success=True, message=None, data=service.start_totp(admin))
+
+
+@router.post("/auth/mfa/totp/confirm", response_model=ApiResponse[MfaStatus], summary="Confirm authenticator app setup")
+def mfa_totp_confirm(
+    body: TotpConfirmRequest,
+    admin: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+):
+    return ApiResponse(success=True, message="Authenticator app added.", data=service.confirm_totp(admin, body.code))
+
+
+@router.delete("/auth/mfa/totp", response_model=ApiResponse[MfaStatus], summary="Remove the authenticator app")
+def mfa_totp_remove(admin: AdminResponse = Depends(get_current_admin), service: AuthService = Depends(get_service)):
+    return ApiResponse(success=True, message="Authenticator app removed.", data=service.remove_totp(admin))
+
+
+@router.post("/auth/mfa/passkeys/options", response_model=ApiResponse[PasskeyOptionsResponse], summary="Passkey challenge for setup")
+def mfa_passkey_setup(request: Request, admin: AdminResponse = Depends(get_current_admin), service: AuthService = Depends(get_service)):
+    return ApiResponse(success=True, message=None, data=service.passkey_registration_options(admin, request.headers.get("origin")))
+
+
+@router.post("/auth/mfa/passkeys", response_model=ApiResponse[MfaStatus], summary="Save a passkey")
+def mfa_passkey_save(
+    body: PasskeyRegisterRequest,
+    request: Request,
+    admin: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+):
+    return ApiResponse(success=True, message="Passkey saved.", data=service.register_passkey(admin, body, request.headers.get("origin")))
+
+
+@router.delete("/auth/mfa/passkeys/{passkey_id}", response_model=ApiResponse[MfaStatus], summary="Remove a passkey")
+def mfa_passkey_remove(passkey_id: int, admin: AdminResponse = Depends(get_current_admin), service: AuthService = Depends(get_service)):
+    return ApiResponse(success=True, message="Passkey removed.", data=service.remove_passkey(admin, passkey_id))
 
 
 @router.post("/auth/logout", response_model=ApiResponse[bool], summary="End this admin session")
@@ -319,7 +404,7 @@ def create_admin(
 ):
     return ApiResponse(
         success=True,
-        message="Admin created. The temporary password was emailed and the account stays off until they change it.",
+        message="Admin created. The temporary password was emailed. The account activates after they verify their email and set a password.",
         data=service.create_admin(request, current),
     )
 

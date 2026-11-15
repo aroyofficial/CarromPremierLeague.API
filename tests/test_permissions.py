@@ -55,6 +55,9 @@ class CatalogTests(unittest.TestCase):
             ("POST", "/auth/bootstrap"),
             ("POST", "/auth/forgot-password"),
             ("POST", "/auth/reset-password"),
+            ("POST", "/auth/mfa/email-code"),
+            ("POST", "/auth/mfa/passkey-options"),
+            ("POST", "/auth/mfa/verify"),
             ("POST", "/assistant/public/chat"),
         }
         routes = self._api_routes()
@@ -127,10 +130,13 @@ class AdminPermissionRuleTests(unittest.TestCase):
         welcome = next(mail for mail in reversed(self.service.mailer.sent) if f"Username: {admin.username}" in mail.text)
         password = welcome.text.split("Temporary password: ", 1)[1].splitlines()[0]
         token = self.service.login(fakes.LoginRequest(username=admin.username, password=password))
+        current = self.service.current_admin(token.access_token)
+        self.service.request_password_code(current)
+        code = self.service.mailer.sent[-1].text.split("Code: ", 1)[1].splitlines()[0]
         return self.service.update_admin(
             admin.id,
-            AdminUpdateRequest(password="replacement-password-1"),
-            self.service.current_admin(token.access_token),
+            AdminUpdateRequest(password="replacement-password-1", password_code=code),
+            current,
         )
 
     def _make(self, username, codes=()):

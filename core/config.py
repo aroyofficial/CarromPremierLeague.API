@@ -56,6 +56,12 @@ class Settings:
         self.SMTP_FROM: str | None = self._get_optional_env("CPL_SMTP_FROM")
         self.SMTP_FROM_NAME: str = self._get_optional_env("CPL_SMTP_FROM_NAME") or "Carrom Premier League"
         self.SMTP_STARTTLS: bool = (self._get_optional_env("CPL_SMTP_STARTTLS") or "true").lower() != "false"
+        self.MAIL_PROVIDER: str = (self._get_optional_env("CPL_MAIL_PROVIDER") or "auto").lower()
+        self.MAIL_API_KEY: str | None = self._get_optional_env("CPL_MAIL_API_KEY")
+        self.MAIL_FROM: str | None = self._get_optional_env("CPL_MAIL_FROM") or self.SMTP_FROM
+        self.GMAIL_CLIENT_ID: str | None = self._get_optional_env("CPL_GMAIL_CLIENT_ID")
+        self.GMAIL_CLIENT_SECRET: str | None = self._get_optional_env("CPL_GMAIL_CLIENT_SECRET")
+        self.GMAIL_REFRESH_TOKEN: str | None = self._get_optional_env("CPL_GMAIL_REFRESH_TOKEN")
         self.PUBLIC_WEB_URL: str = (
             self._get_optional_env("CPL_PUBLIC_WEB_URL") or "https://aroyofficial.github.io/CarromPremierLeague.Web"
         ).rstrip("/")
