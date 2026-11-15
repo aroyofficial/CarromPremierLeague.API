@@ -24,6 +24,7 @@ GROUP_ORDER = [
     "Matches",
     "Statistics",
     "Roster",
+    "Assistant",
     "Documentation",
 ]
 
@@ -92,6 +93,10 @@ DESCRIPTIONS = {
     ("GET", "/seasons/{season_id}/league-table"): "Get the league table for a season",
     ("GET", "/settings"): "Get competition settings",
     ("PUT", "/settings"): "Update competition settings",
+    ("GET", "/assistant/status"): "Whether the Striker assistant has an AI provider configured",
+    ("POST", "/assistant/public/chat"): "Ask Striker about league data (read only, rate limited)",
+    ("POST", "/assistant/admin/chat"): "Ask Striker as the signed-in admin; changes need confirmation",
+    ("POST", "/assistant/admin/confirm"): "Confirm or cancel a change Striker prepared",
     ("GET", "/matches"): "List matches",
     ("GET", "/matches/next-order"): "Get the next match order for a season",
     ("GET", "/matches/{match_id}"): "Get a match by id",

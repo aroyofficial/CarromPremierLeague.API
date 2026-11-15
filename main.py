@@ -22,6 +22,7 @@ from routes.match_routes import router as match_router
 from routes.settings_routes import router as settings_router
 from routes.media_routes import router as media_router
 from routes.gallery_routes import router as gallery_router
+from routes.assistant_routes import router as assistant_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -62,3 +63,4 @@ app.include_router(match_router)
 app.include_router(settings_router)
 app.include_router(media_router)
 app.include_router(gallery_router)
+app.include_router(assistant_router)

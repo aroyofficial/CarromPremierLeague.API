@@ -49,7 +49,7 @@ class CatalogTests(unittest.TestCase):
         self.assertLessEqual(used, ALL_CODES)
 
     def test_every_write_route_names_a_permission_or_requires_sign_in(self):
-        open_writes = {("POST", "/auth/login"), ("POST", "/auth/bootstrap")}
+        open_writes = {("POST", "/auth/login"), ("POST", "/auth/bootstrap"), ("POST", "/assistant/public/chat")}
         routes = self._api_routes()
         self.assertGreater(len(routes), 40)
         for route in routes:

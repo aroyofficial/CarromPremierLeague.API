@@ -40,6 +40,15 @@ class Settings:
         self.CLOUDINARY_URL: str | None = self._get_optional_env("CPL_CLOUDINARY_URL")
         self.MEDIA_FOLDER: str = (self._get_optional_env("CPL_MEDIA_FOLDER") or "cpl").strip("/")
 
+        self.GEMINI_API_KEY: str | None = self._get_optional_env("CPL_GEMINI_API_KEY")
+        self.GEMINI_MODEL: str = self._get_optional_env("CPL_GEMINI_MODEL") or "gemini-2.5-flash"
+        self.GROQ_API_KEY: str | None = self._get_optional_env("CPL_GROQ_API_KEY")
+        self.GROQ_MODEL: str = self._get_optional_env("CPL_GROQ_MODEL") or "llama-3.3-70b-versatile"
+        self.OPENROUTER_API_KEY: str | None = self._get_optional_env("CPL_OPENROUTER_API_KEY")
+        self.OPENROUTER_MODEL: str = (
+            self._get_optional_env("CPL_OPENROUTER_MODEL") or "meta-llama/llama-3.3-70b-instruct:free"
+        )
+
     @staticmethod
     def _get_optional_env(key: str) -> str | None:
         value = os.getenv(key)

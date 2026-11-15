@@ -1,0 +1,267 @@
+"""LLM providers behind one small interface. Keys stay on the server."""
+
+import json
+import uuid
+from dataclasses import dataclass, field
+from typing import Any
+
+import httpx
+
+from core.config import settings
+
+TIMEOUT = httpx.Timeout(45.0, connect=10.0)
+
+
+class ProviderError(RuntimeError):
+    pass
+
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    args: dict
+
+
+@dataclass
+class Reply:
+    text: str = ""
+    calls: list[ToolCall] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    name: str
+    description: str
+    parameters: dict
+
+
+class Session:
+    async def step(self, *, allow_tools: bool = True) -> Reply:
+        raise NotImplementedError
+
+    def add_results(self, results: list[tuple[ToolCall, dict]]) -> None:
+        raise NotImplementedError
+
+
+class Provider:
+    name = ""
+    label = ""
+
+    def session(self, system: str, history: list[dict], tools: list[ToolSpec]) -> Session:
+        raise NotImplementedError
+
+
+def _gemini_schema(node: dict) -> dict:
+    result: dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "type":
+            result[key] = str(value).upper()
+        elif key == "properties":
+            result[key] = {name: _gemini_schema(child) for name, child in value.items()}
+        elif key == "items":
+            result[key] = _gemini_schema(value)
+        else:
+            result[key] = value
+    return result
+
+
+async def _post(client: httpx.AsyncClient, provider: str, url: str, **kwargs) -> dict:
+    try:
+        response = await client.post(url, timeout=TIMEOUT, **kwargs)
+    except httpx.HTTPError as error:
+        raise ProviderError(f"{provider} is unreachable: {type(error).__name__}") from None
+    if response.status_code >= 400:
+        raise ProviderError(f"{provider} returned {response.status_code}: {response.text[:300]}")
+    try:
+        return response.json()
+    except ValueError:
+        raise ProviderError(f"{provider} returned a non-JSON response") from None
+
+
+class GeminiSession(Session):
+    def __init__(self, provider: "GeminiProvider", system: str, history: list[dict], tools: list[ToolSpec]):
+        self.provider = provider
+        self.system = system
+        self.contents: list[dict] = [
+            {"role": "model" if item["role"] == "assistant" else "user", "parts": [{"text": item["content"]}]}
+            for item in history
+        ]
+        self.declarations = []
+        for tool in tools:
+            declaration: dict[str, Any] = {"name": tool.name, "description": tool.description}
+            if tool.parameters.get("properties"):
+                declaration["parameters"] = _gemini_schema(tool.parameters)
+            self.declarations.append(declaration)
+
+    async def step(self, *, allow_tools: bool = True) -> Reply:
+        generation: dict[str, Any] = {"temperature": 0.2, "maxOutputTokens": 2048}
+        if "2.5-flash" in self.provider.model:
+            generation["thinkingConfig"] = {"thinkingBudget": 0}
+        body: dict[str, Any] = {
+            "systemInstruction": {"parts": [{"text": self.system}]},
+            "contents": self.contents,
+            "generationConfig": generation,
+        }
+        if self.declarations:
+            body["tools"] = [{"functionDeclarations": self.declarations}]
+            body["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO" if allow_tools else "NONE"}}
+        url = f"{self.provider.base_url}/models/{self.provider.model}:generateContent"
+        data = await _post(
+            self.provider.client, "Gemini", url, json=body, headers={"x-goog-api-key": self.provider.api_key}
+        )
+        candidates = data.get("candidates") or []
+        if not candidates:
+            reason = (data.get("promptFeedback") or {}).get("blockReason")
+            if reason:
+                return Reply(text="I can't help with that request.")
+            raise ProviderError("Gemini returned no candidates")
+        content = candidates[0].get("content") or {}
+        parts = content.get("parts") or []
+        if not parts:
+            if candidates[0].get("finishReason") in {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII"}:
+                return Reply(text="I can't help with that request.")
+            raise ProviderError(f"Gemini returned an empty answer ({candidates[0].get('finishReason')})")
+        self.contents.append({"role": "model", "parts": parts})
+        reply = Reply()
+        texts = []
+        for part in parts:
+            if part.get("thought"):
+                continue
+            if "text" in part:
+                texts.append(part["text"])
+            call = part.get("functionCall")
+            if call:
+                reply.calls.append(
+                    ToolCall(id=call.get("id") or "", name=call.get("name", ""), args=call.get("args") or {})
+                )
+        reply.text = "".join(texts).strip()
+        return reply
+
+    def add_results(self, results: list[tuple[ToolCall, dict]]) -> None:
+        parts = []
+        for call, result in results:
+            response: dict[str, Any] = {"name": call.name, "response": {"result": result}}
+            if call.id:
+                response["id"] = call.id
+            parts.append({"functionResponse": response})
+        self.contents.append({"role": "user", "parts": parts})
+
+
+class GeminiProvider(Provider):
+    name = "gemini"
+    label = "Google Gemini"
+    base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+    def __init__(self, api_key: str, model: str, client: httpx.AsyncClient):
+        self.api_key = api_key
+        self.model = model
+        self.client = client
+
+    def session(self, system, history, tools) -> Session:
+        return GeminiSession(self, system, history, tools)
+
+
+class OpenAISession(Session):
+    def __init__(self, provider: "OpenAICompatibleProvider", system: str, history: list[dict], tools: list[ToolSpec]):
+        self.provider = provider
+        self.messages: list[dict] = [{"role": "system", "content": system}] + [
+            {"role": item["role"], "content": item["content"]} for item in history
+        ]
+        self.tools = [
+            {
+                "type": "function",
+                "function": {"name": tool.name, "description": tool.description, "parameters": tool.parameters},
+            }
+            for tool in tools
+        ]
+
+    async def step(self, *, allow_tools: bool = True) -> Reply:
+        body: dict[str, Any] = {
+            "model": self.provider.model,
+            "messages": self.messages,
+            "temperature": 0.2,
+            "max_tokens": 1500,
+        }
+        if self.tools and allow_tools:
+            body["tools"] = self.tools
+            body["tool_choice"] = "auto"
+        headers = {"Authorization": f"Bearer {self.provider.api_key}", **self.provider.extra_headers}
+        data = await _post(self.provider.client, self.provider.label, self.provider.url, json=body, headers=headers)
+        choices = data.get("choices") or []
+        if not choices:
+            raise ProviderError(f"{self.provider.label} returned no choices")
+        message = choices[0].get("message") or {}
+        reply = Reply(text=(message.get("content") or "").strip())
+        tool_calls = message.get("tool_calls") or []
+        for item in tool_calls:
+            function = item.get("function") or {}
+            raw = function.get("arguments") or "{}"
+            try:
+                args = json.loads(raw) if isinstance(raw, str) else dict(raw)
+            except (ValueError, TypeError):
+                args = {}
+            reply.calls.append(ToolCall(id=item.get("id") or uuid.uuid4().hex, name=function.get("name", ""), args=args or {}))
+        entry: dict[str, Any] = {"role": "assistant", "content": message.get("content") or ""}
+        if tool_calls:
+            entry["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": json.dumps(call.args)},
+                }
+                for call in reply.calls
+            ]
+        self.messages.append(entry)
+        return reply
+
+    def add_results(self, results: list[tuple[ToolCall, dict]]) -> None:
+        for call, result in results:
+            self.messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": json.dumps(result, default=str)}
+            )
+
+
+class OpenAICompatibleProvider(Provider):
+    def __init__(self, name: str, label: str, url: str, api_key: str, model: str, client: httpx.AsyncClient, extra_headers=None):
+        self.name = name
+        self.label = label
+        self.url = url
+        self.api_key = api_key
+        self.model = model
+        self.client = client
+        self.extra_headers = extra_headers or {}
+
+    def session(self, system, history, tools) -> Session:
+        return OpenAISession(self, system, history, tools)
+
+
+def configured_providers(client: httpx.AsyncClient) -> list[Provider]:
+    """Providers in fallback order. Only those with a key are returned."""
+    providers: list[Provider] = []
+    if settings.GEMINI_API_KEY:
+        providers.append(GeminiProvider(settings.GEMINI_API_KEY, settings.GEMINI_MODEL, client))
+    if settings.GROQ_API_KEY:
+        providers.append(
+            OpenAICompatibleProvider(
+                "groq",
+                "Groq",
+                "https://api.groq.com/openai/v1/chat/completions",
+                settings.GROQ_API_KEY,
+                settings.GROQ_MODEL,
+                client,
+            )
+        )
+    if settings.OPENROUTER_API_KEY:
+        providers.append(
+            OpenAICompatibleProvider(
+                "openrouter",
+                "OpenRouter",
+                "https://openrouter.ai/api/v1/chat/completions",
+                settings.OPENROUTER_API_KEY,
+                settings.OPENROUTER_MODEL,
+                client,
+                extra_headers={"X-Title": "CPL Striker"},
+            )
+        )
+    return providers

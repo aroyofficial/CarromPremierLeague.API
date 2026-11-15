@@ -5,3 +5,4 @@ pyodbc
 python-dotenv
 python-multipart
 cloudinary
+httpx
