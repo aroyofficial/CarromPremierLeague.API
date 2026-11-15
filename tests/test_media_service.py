@@ -14,6 +14,7 @@ from services.media_service import (
     MediaService,
     _GuardedRedirectHandler,
     fetch_public_image,
+    fetch_public_media,
     normalize_picture_link,
     read_image,
     read_submitted_picture,
@@ -220,6 +221,44 @@ class PlayerAvatarTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 503)
 
 
+class FakeAdminPictureRepository:
+    def __init__(self):
+        self.rows = {3: {"url": None, "key": None}}
+
+    def get_avatar_key(self, admin_id):
+        row = self.rows.get(admin_id)
+        if row is None:
+            return False, None
+        return True, row["key"]
+
+    def set_avatar(self, admin_id, url, key):
+        if admin_id not in self.rows:
+            return False
+        self.rows[admin_id] = {"url": url, "key": key}
+        return True
+
+    def get_by_id(self, admin_id):
+        return self.rows.get(admin_id)
+
+
+class AdminAvatarTests(unittest.TestCase):
+    def test_upload_stores_an_admin_picture(self):
+        admins = FakeAdminPictureRepository()
+        storage = FakeStorage()
+        row = MediaService(storage, admin_repository=admins).set_admin_avatar(3, PNG)
+        self.assertEqual(row["key"], "cpl/admins/1")
+        self.assertEqual(row["url"], "https://img.test/cpl/admins/1")
+
+    def test_remove_clears_an_admin_picture(self):
+        admins = FakeAdminPictureRepository()
+        storage = FakeStorage()
+        service = MediaService(storage, admin_repository=admins)
+        service.set_admin_avatar(3, PNG)
+        row = service.remove_admin_avatar(3)
+        self.assertEqual(row, {"url": None, "key": None})
+        self.assertEqual(storage.deleted, ["cpl/admins/1"])
+
+
 class TeamLogoTests(unittest.TestCase):
     def test_remove_legacy_url_needs_no_storage(self):
         teams = FakeTeamRepository()
@@ -346,6 +385,16 @@ def _public_dns(_host):
 
 
 class PublicLinkTests(unittest.TestCase):
+    def test_downloads_a_public_file_and_refuses_a_web_page(self):
+        opener = FakeOpener(data=b"\xff\xd8\xff\x00", headers={"Content-Type": "image/jpeg"})
+        data, media_type = fetch_public_media("https://cdn.example/a.jpg#cplcrop=0,0,1,1", opener=opener, resolve=_public_dns)
+        self.assertEqual((data, media_type), (b"\xff\xd8\xff\x00", "image/jpeg"))
+        self.assertEqual(opener.opened, ["https://cdn.example/a.jpg"])
+        page = FakeOpener(data=b"<html></html>", headers={"Content-Type": "text/html"})
+        with self.assertRaises(HTTPException) as raised:
+            fetch_public_media("https://cdn.example/page", opener=page, resolve=_public_dns)
+        self.assertEqual(raised.exception.status_code, 400)
+
     def test_downloads_a_public_image(self):
         opener = FakeOpener()
         self.assertEqual(

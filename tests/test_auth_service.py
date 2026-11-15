@@ -15,7 +15,10 @@ os.environ.setdefault("CPL_DB_PWD", "unused")
 os.environ.setdefault("CPL_DB_NAME", "unused")
 os.environ.setdefault("CPL_DB_POOL_SIZE", "1")
 
+from datetime import date
+
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from core.security import PASSWORD_ITERATIONS, decode_access_token, hash_password
 from schemas.auth_schema import AdminCreateRequest, AdminUpdateRequest, LoginRequest
@@ -44,14 +47,27 @@ class FakeAdminRepository:
         if not item or item["Void"]:
             return None
         from schemas.auth_schema import AdminResponse
-        return AdminResponse(id=item["Id"], username=item["Username"], is_active=item["IsActive"])
+        return AdminResponse(
+            id=item["Id"],
+            username=item["Username"],
+            is_active=item["IsActive"],
+            first_name=item.get("FirstName"),
+            last_name=item.get("LastName"),
+            date_of_birth=item.get("DateOfBirth"),
+            gender=item.get("Gender"),
+            phone_code=item.get("PhoneCode"),
+            phone_number=item.get("PhoneNumber"),
+            email=item.get("Email"),
+            avatar_url=item.get("AvatarUrl"),
+        )
 
     def get_all(self):
         return [self.get_by_id(item["Id"]) for item in self.records.values() if not item["Void"]]
 
-    def create(self, username, password_hash, password_salt, password_iterations):
+    def create(self, username, password_hash, password_salt, password_iterations, profile=None):
         admin_id = self.next_id
         self.next_id += 1
+        profile = profile or {}
         self.records[admin_id] = {
             "Id": admin_id,
             "Username": username,
@@ -61,6 +77,14 @@ class FakeAdminRepository:
             "TokenVersion": 1,
             "IsActive": True,
             "Void": False,
+            "FirstName": profile.get("first_name"),
+            "LastName": profile.get("last_name"),
+            "DateOfBirth": profile.get("date_of_birth"),
+            "Gender": profile.get("gender"),
+            "PhoneCode": profile.get("phone_code"),
+            "PhoneNumber": profile.get("phone_number"),
+            "Email": profile.get("email"),
+            "AvatarUrl": None,
         }
         return self.get_by_id(admin_id)
 
@@ -75,6 +99,13 @@ class FakeAdminRepository:
                 "password_salt": "PasswordSalt",
                 "password_iterations": "PasswordIterations",
                 "is_active": "IsActive",
+                "first_name": "FirstName",
+                "last_name": "LastName",
+                "date_of_birth": "DateOfBirth",
+                "gender": "Gender",
+                "phone_code": "PhoneCode",
+                "phone_number": "PhoneNumber",
+                "email": "Email",
             }[key]] = value
         return self.get_by_id(admin_id)
 
@@ -171,6 +202,43 @@ class AuthServiceTests(unittest.TestCase):
 
         self.assertEqual(request.username, "admin")
         self.assertTrue(verify_password(SEED_PASSWORD, password_hash, password_salt, PASSWORD_ITERATIONS))
+
+    def test_profile_is_saved_and_can_be_cleared(self):
+        created = self.service.create_admin(
+            AdminCreateRequest(
+                username="ada-admin",
+                password="another-password-123",
+                first_name=" Ada ",
+                last_name="Lovelace",
+                date_of_birth=date(1815, 12, 10),
+                gender="Female",
+                phone_code="+44",
+                phone_number="7700900123",
+                email="Ada@Example.com",
+            ),
+            self.primary,
+        )
+        self.assertEqual(created.first_name, "Ada")
+        self.assertEqual(created.gender, "female")
+        self.assertEqual(created.email, "ada@example.com")
+        self.assertEqual(created.phone_code, "+44")
+        self.assertEqual(created.date_of_birth, date(1815, 12, 10))
+
+        cleared = self.service.update_admin(
+            created.id,
+            AdminUpdateRequest(last_name="King", phone_code=None, phone_number=None, email=None),
+            self.primary,
+        )
+        self.assertEqual(cleared.last_name, "King")
+        self.assertEqual(cleared.first_name, "Ada")
+        self.assertIsNone(cleared.phone_number)
+        self.assertIsNone(cleared.email)
+
+    def test_profile_rejects_a_partial_phone_and_a_future_birthday(self):
+        with self.assertRaises(ValidationError):
+            AdminCreateRequest(username="ada-admin", password="another-password-123", phone_number="7700900123")
+        with self.assertRaises(ValidationError):
+            AdminCreateRequest(username="ada-admin", password="another-password-123", date_of_birth=date(2999, 1, 1))
 
     def test_second_bootstrap_is_rejected(self):
         with self.assertRaises(HTTPException) as raised:

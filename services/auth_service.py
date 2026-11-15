@@ -104,6 +104,14 @@ class AuthService:
             username=record["Username"],
             is_active=True,
             permissions=self.permissions.codes_for(record["Id"]),
+            first_name=record.get("FirstName"),
+            last_name=record.get("LastName"),
+            date_of_birth=AdminRepository._as_date(record.get("DateOfBirth")),
+            gender=record.get("Gender"),
+            phone_code=record.get("PhoneCode"),
+            phone_number=record.get("PhoneNumber"),
+            email=record.get("Email"),
+            avatar_url=record.get("AvatarUrl"),
         )
 
     def list_admins(self) -> list[AdminResponse]:
@@ -124,10 +132,28 @@ class AuthService:
         if self.repository.get_credentials_by_username(username):
             raise HTTPException(status_code=409, detail="Username already exists.")
         password_hash, password_salt = hash_password(request.password)
-        created = self.repository.create(username, password_hash, password_salt, PASSWORD_ITERATIONS)
+        created = self.repository.create(
+            username,
+            password_hash,
+            password_salt,
+            PASSWORD_ITERATIONS,
+            profile=self._profile(request),
+        )
         if codes:
             self.permissions.change(created.id, codes, set(), granted_by)
         return self.get_admin(created.id)
+
+    @staticmethod
+    def _profile(request: AdminCreateRequest) -> dict:
+        return {
+            "first_name": request.first_name,
+            "last_name": request.last_name,
+            "date_of_birth": request.date_of_birth,
+            "gender": request.gender,
+            "phone_code": request.phone_code,
+            "phone_number": request.phone_number,
+            "email": request.email,
+        }
 
     def create_admin(self, request: AdminCreateRequest, actor: AdminResponse) -> AdminResponse:
         requested = self._known_codes(request.permissions)

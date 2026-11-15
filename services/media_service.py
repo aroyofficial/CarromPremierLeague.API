@@ -134,6 +134,85 @@ def _as_public_image(stream: BinaryIO, headers) -> bytes:
         raise HTTPException(status_code=400, detail=rewritten) from error
 
 
+_MEDIA_TYPES = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "video/mp4": "mp4",
+    "video/webm": "webm",
+    "video/quicktime": "mov",
+    "video/ogg": "ogg",
+}
+_MEDIA_LIMITS = {"image": 15 * 1024 * 1024, "video": 50 * 1024 * 1024}
+
+
+def _sniff_media(data: bytes, declared: str) -> str:
+    media_type = declared.split(";")[0].strip().lower()
+    if media_type in _MEDIA_TYPES:
+        return media_type
+    kind = image_format(data)
+    if kind == "jpeg":
+        return "image/jpeg"
+    if kind == "png":
+        return "image/png"
+    if kind == "webp":
+        return "image/webp"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return "video/mp4"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return "video/webm"
+    raise HTTPException(status_code=400, detail="That link does not offer a file to download.")
+
+
+def fetch_public_media(
+    url: str,
+    *,
+    opener=None,
+    resolve: Optional[Callable[[str], list[str]]] = None,
+) -> tuple[bytes, str]:
+    """Download a public image or video file. Private hosts and web pages are refused."""
+    resolver = resolve or _resolve_host
+    checked = _require_public_url(url.split("#", 1)[0], resolver)
+    if opener is None:
+        opener = urllib.request.build_opener(_GuardedRedirectHandler(resolver))
+    request = urllib.request.Request(
+        checked,
+        headers={"User-Agent": "CarromPremierLeague/1.0", "Accept": "image/*,video/*;q=0.8"},
+        method="GET",
+    )
+    try:
+        with opener.open(request, timeout=30) as response:
+            declared = _header(getattr(response, "headers", {}), "Content-Type")
+            if declared.split(";")[0].strip().lower().startswith("text/"):
+                raise HTTPException(status_code=400, detail="That link does not offer a file to download.")
+            length = _header(getattr(response, "headers", {}), "Content-Length")
+            chunks = []
+            total = 0
+            media_type = ""
+            while True:
+                chunk = response.read(_CHUNK_BYTES)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if not media_type and total >= 16:
+                    media_type = _sniff_media(b"".join(chunks), declared)
+                limit = _MEDIA_LIMITS["video" if media_type.startswith("video/") else "image"]
+                if length.isdigit() and int(length) > limit or total > limit:
+                    raise HTTPException(status_code=400, detail="That file is too large to download.")
+            data = b"".join(chunks)
+            media_type = _sniff_media(data, declared)
+            return data, media_type
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.warning("Could not download a public file (%s).", type(error).__name__)
+        raise HTTPException(status_code=400, detail="That link could not be downloaded.") from error
+
+
 def fetch_public_image(
     url: str,
     *,
@@ -222,10 +301,11 @@ def read_submitted_picture(
 
 class MediaService:
 
-    def __init__(self, storage: Optional[MediaStorage], player_repository=None, team_repository=None):
+    def __init__(self, storage: Optional[MediaStorage], player_repository=None, team_repository=None, admin_repository=None):
         self.storage = storage
         self.player_repository = player_repository
         self.team_repository = team_repository
+        self.admin_repository = admin_repository
 
     def _require_storage(self) -> MediaStorage:
         if self.storage is None:
@@ -396,3 +476,44 @@ class MediaService:
             lambda url, key: repository.set_logo(team_id, url, key),
         )
         return repository.get_by_id(team_id)
+
+    def apply_admin_picture(self, admin_id: int, file, url: Optional[str]):
+        link = (url or "").strip()
+        filename = getattr(file, "filename", None) if file is not None else None
+        if filename and link:
+            raise HTTPException(status_code=400, detail="Send an image file or a public link, not both.")
+        if link:
+            return self.set_admin_avatar_link(admin_id, link)
+        if filename:
+            return self.set_admin_avatar(admin_id, read_image(getattr(file, "file", file)))
+        raise HTTPException(status_code=400, detail="Choose an image file or a public image link.")
+
+    def set_admin_avatar(self, admin_id: int, data: bytes):
+        repository = self.admin_repository
+        self._replace(
+            "admin",
+            "Admin",
+            lambda: repository.get_avatar_key(admin_id),
+            lambda url, key: repository.set_avatar(admin_id, url, key),
+            data,
+        )
+        return repository.get_by_id(admin_id)
+
+    def set_admin_avatar_link(self, admin_id: int, url: str):
+        repository = self.admin_repository
+        self._store_link(
+            "Admin",
+            lambda: repository.get_avatar_key(admin_id),
+            lambda stored, key: repository.set_avatar(admin_id, stored, key),
+            url,
+        )
+        return repository.get_by_id(admin_id)
+
+    def remove_admin_avatar(self, admin_id: int):
+        repository = self.admin_repository
+        self._remove(
+            "Admin",
+            lambda: repository.get_avatar_key(admin_id),
+            lambda url, key: repository.set_avatar(admin_id, url, key),
+        )
+        return repository.get_by_id(admin_id)

@@ -1,6 +1,7 @@
 import io
 import struct
 import unittest
+from unittest.mock import patch
 
 from tests import test_auth_service as fakes  # noqa: F401  (sets the environment before app imports)
 
@@ -165,26 +166,47 @@ class MemoryGallery:
         return rows[:limit]
 
     def list_admin(self, season_id, status, caption_like, after_sort, after_id, limit):
-        rows = self._rows(season_id, False) if season_id else [
-            dict(item, SortOrder=0, IsCover=0)
-            for item in self.items.values()
-            if not item["void"]
-        ]
-        if not season_id:
-            rows.sort(key=lambda row: row["Id"], reverse=True)
+        if season_id:
+            rows = self._rows(season_id, False)
+        else:
+            rows = []
+            for item in self.items.values():
+                if item["void"]:
+                    continue
+                row = dict(item)
+                row["SortOrder"] = item.get("LibrarySort", 0)
+                row["IsCover"] = 0
+                rows.append(row)
+            rows.sort(key=lambda row: (row["SortOrder"], -row["Id"]))
         if status == "published":
             rows = [row for row in rows if row["IsPublished"]]
         elif status == "draft":
             rows = [row for row in rows if not row["IsPublished"]]
+        if caption_like and caption_like != "%":
+            needle = caption_like.strip("%").lower()
+            rows = [row for row in rows if needle in (row.get("Caption") or "").lower()]
         if after_sort is not None and season_id:
             rows = [
                 row
                 for row in rows
                 if row["SortOrder"] > after_sort or (row["SortOrder"] == after_sort and row["Id"] > after_id)
             ]
-        if not season_id and after_id is not None:
-            rows = [row for row in rows if row["Id"] < after_id]
+        if not season_id and after_sort is not None:
+            rows = [
+                row
+                for row in rows
+                if row["SortOrder"] > after_sort or (row["SortOrder"] == after_sort and row["Id"] < after_id)
+            ]
         return rows[:limit]
+
+    def item_ids_for_library(self):
+        rows = [item for item in self.items.values() if not item["void"]]
+        rows.sort(key=lambda item: (item.get("LibrarySort", 0), -item["Id"]))
+        return [item["Id"] for item in rows]
+
+    def set_library_order(self, item_ids):
+        for index, item_id in enumerate(item_ids):
+            self.items[item_id]["LibrarySort"] = index
 
     def public_seasons(self):
         result = []
@@ -296,6 +318,26 @@ class GalleryRuleTests(unittest.TestCase):
     def test_png_pixel_size_is_read_from_the_header(self):
         self.assertEqual(image_pixel_size(_png(640, 480)), (640, 480))
 
+    def _publish(self, photo):
+        return self.service.update(photo.id, GalleryUpdateRequest(is_published=True), self.curator, {"is_published"})
+
+    def test_download_saves_a_public_image_file(self):
+        photo = self._publish(self._link(caption="Match night"))
+        with patch("services.gallery_service.fetch_public_media", return_value=(b"\xff\xd8\xff\x00", "image/jpeg")) as fetch:
+            data, media_type, name = self.service.public_file(photo.id)
+        fetch.assert_called_once_with(photo.url)
+        self.assertEqual((data, media_type, name), (b"\xff\xd8\xff\x00", "image/jpeg", "Match night.jpg"))
+
+    def test_download_does_not_fetch_a_youtube_or_vimeo_page(self):
+        youtube = self._publish(self._link(url="https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        vimeo = self._publish(self._link(url="https://vimeo.com/123456789"))
+        with patch("services.gallery_service.fetch_public_media") as fetch:
+            for photo in (youtube, vimeo):
+                with self.assertRaises(HTTPException) as raised:
+                    self.service.public_file(photo.id)
+                self.assertEqual(raised.exception.status_code, 400)
+        fetch.assert_not_called()
+
     def test_delete_removes_the_row_and_its_season_links(self):
         photo = self._link(seasons="1,3")
         self.service.delete(photo.id, self.curator)
@@ -395,6 +437,13 @@ class GalleryRuleTests(unittest.TestCase):
         self.service.delete(item_id, self.curator)
         self.assertIsNone(self.repo.get(item_id))
         self.assertEqual(self.storage.deleted, [])
+
+    def test_library_order_does_not_need_a_season(self):
+        first = self._link(url="https://cdn.example/library-a.jpg", seasons="")
+        second = self._link(url="https://cdn.example/library-b.jpg", seasons="")
+        self.service.order(GalleryOrderRequest(season_id=None, item_ids=[first.id, second.id]))
+        listed = [item.id for item in self.service.admin_page(None, "all", None, None, 24).items]
+        self.assertEqual(listed, [first.id, second.id])
 
     def test_bulk_publish_hide_and_order(self):
         first = self._link(url="https://cdn.example/a.jpg")

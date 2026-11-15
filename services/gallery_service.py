@@ -18,7 +18,7 @@ from schemas.gallery_schema import (
     GallerySeason,
     GalleryUpdateRequest,
 )
-from services.media_service import MAX_IMAGE_BYTES, image_format, normalize_picture_link
+from services.media_service import MAX_IMAGE_BYTES, fetch_public_media, image_format, normalize_picture_link
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +276,28 @@ class GalleryService:
         rows = self.repository.list_public(season_id, after_sort, after_id, limit + 1)
         return self._page(rows, limit, newest=False, public_only=True)
 
+    def public_file(self, item_id: int) -> tuple[bytes, str, str]:
+        photo = self.public_photo(item_id)
+        url = photo.url or ""
+        if _YOUTUBE_ID.search(url) or _VIMEO_ID.search(url):
+            raise HTTPException(
+                status_code=400,
+                detail="YouTube and Vimeo do not offer a file to download.",
+            )
+        data, media_type = fetch_public_media(url)
+        extension = {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+            "image/gif": "gif",
+            "video/mp4": "mp4",
+            "video/webm": "webm",
+            "video/quicktime": "mov",
+            "video/ogg": "ogg",
+        }[media_type]
+        base = re.sub(r"[^\w\- ]+", "", photo.caption or "").strip()[:80] or "media"
+        return data, media_type, f"{base}.{extension}"
+
     def public_photo(self, item_id: int) -> GalleryPhoto:
         row = self.repository.get_public(item_id)
         if row is None:
@@ -285,13 +307,13 @@ class GalleryService:
 
     def admin_page(self, season_id: int | None, status: str, caption: str | None, cursor: str | None, limit: int) -> GalleryPage:
         limit = _limit(limit, default=48, maximum=100)
-        newest = not season_id
-        if newest:
-            after_id = decode_cursor(cursor, newest=True)
-            after_sort = None
-        else:
-            after = decode_cursor(cursor, newest=False)
-            after_sort, after_id = after if after else (None, None)
+        after_sort, after_id = None, None
+        if cursor:
+            if not season_id and cursor.startswith("n:"):
+                after_id = decode_cursor(cursor, newest=True)
+                after_sort = 0
+            else:
+                after_sort, after_id = decode_cursor(cursor, newest=False)
         rows = self.repository.list_admin(
             season_id,
             status or "all",
@@ -300,7 +322,7 @@ class GalleryService:
             after_id,
             limit + 1,
         )
-        return self._page(rows, limit, newest=newest, public_only=False)
+        return self._page(rows, limit, newest=False, public_only=False)
 
     def create(
         self,
@@ -395,6 +417,12 @@ class GalleryService:
         return self._saved(item_id)
 
     def order(self, payload: GalleryOrderRequest) -> GalleryPage:
+        if payload.season_id is None:
+            existing = self.repository.item_ids_for_library()
+            if len(payload.item_ids) != len(set(payload.item_ids)) or set(payload.item_ids) != set(existing):
+                raise HTTPException(status_code=400, detail="Send every item once.")
+            self.repository.set_library_order(payload.item_ids)
+            return self.admin_page(None, "all", None, None, max(len(payload.item_ids), 1))
         if not self.repository.known_seasons([payload.season_id]):
             raise HTTPException(status_code=400, detail="Choose a season that exists.")
         existing = self.repository.item_ids_for_season(payload.season_id)

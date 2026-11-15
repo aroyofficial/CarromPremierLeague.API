@@ -1,6 +1,7 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
+from fastapi.responses import Response as RawResponse
 
 from core.database import get_db
 from core.response import ApiResponse
@@ -49,6 +50,19 @@ def public_gallery(
         success=True,
         message="Gallery photos fetched.",
         data=service.public_page(season_id, cursor, limit),
+    )
+
+
+@router.get("/gallery/{item_id}/file")
+def download_gallery_file(item_id: int, service: GalleryService = Depends(get_service)):
+    data, media_type, name = service.public_file(item_id)
+    return RawResponse(
+        content=data,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "Cache-Control": "private, no-store",
+        },
     )
 
 

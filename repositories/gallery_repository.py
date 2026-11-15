@@ -242,21 +242,21 @@ class GalleryRepository:
             return cursor.fetchall()
         after = ""
         params = [status, status, status, searching, like]
-        if after_id is not None:
-            after = "AND gi.Id < %s"
-            params.append(after_id)
+        if after_sort is not None:
+            after = "AND (gi.SortOrder > %s OR (gi.SortOrder = %s AND gi.Id < %s))"
+            params.extend([after_sort, after_sort, after_id])
         params.append(limit)
         cursor.execute(
             f"""
             SELECT gi.Id, gi.SourceType, gi.MediaType, gi.Url, gi.StorageKey, gi.Width, gi.Height,
                    gi.Caption, gi.AltText, gi.TakenOn, gi.IsPublished,
-                   CAST(0 AS INT) AS SortOrder, CAST(0 AS BIT) AS IsCover
+                   gi.SortOrder, CAST(0 AS BIT) AS IsCover
             FROM tblGalleryItems gi
             WHERE gi.Void = 0
               AND (%s = 'all' OR (%s = 'published' AND gi.IsPublished = 1) OR (%s = 'draft' AND gi.IsPublished = 0))
               AND (%s = 0 OR gi.Caption LIKE %s)
               {after}
-            ORDER BY gi.Id DESC
+            ORDER BY gi.SortOrder ASC, gi.Id DESC
             OFFSET 0 ROWS FETCH NEXT %s ROWS ONLY
             """,
             tuple(params),
@@ -299,6 +299,26 @@ class GalleryRepository:
             """
         )
         return cursor.fetchall()
+
+    def item_ids_for_library(self) -> list[int]:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            SELECT Id
+            FROM tblGalleryItems
+            WHERE Void = 0
+            ORDER BY SortOrder ASC, Id DESC
+            """
+        )
+        return [int(row["Id"]) for row in cursor.fetchall()]
+
+    def set_library_order(self, item_ids: list[int]) -> None:
+        cursor = self.db.cursor()
+        for index, item_id in enumerate(item_ids):
+            cursor.execute(
+                "UPDATE tblGalleryItems SET SortOrder = %s WHERE Id = %s AND Void = 0",
+                (index, item_id),
+            )
 
     def item_ids_for_season(self, season_id: int) -> list[int]:
         cursor = self.db.cursor()

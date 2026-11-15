@@ -8,15 +8,16 @@ from urllib.parse import urlparse
 
 from core.config import settings
 
-ImageKind = Literal["player", "team", "gallery"]
+ImageKind = Literal["player", "team", "gallery", "admin"]
 
 # Incoming transformations run once at upload, so delivery never pays for them.
 _INCOMING = {
     "player": [{"width": 512, "height": 512, "crop": "fill", "gravity": "face"}],
     "team": [{"width": 512, "height": 512, "crop": "limit"}],
     "gallery": [{"width": 2560, "crop": "limit"}],
+    "admin": [{"width": 512, "height": 512, "crop": "fill", "gravity": "face"}],
 }
-_SUBFOLDER = {"player": "players", "team": "teams", "gallery": "gallery"}
+_SUBFOLDER = {"player": "players", "team": "teams", "gallery": "gallery", "admin": "admins"}
 
 
 @dataclass(frozen=True)
@@ -39,8 +40,8 @@ def default_key(folder: str, kind: ImageKind) -> str:
     return f"{folder}/defaults/{kind}"
 
 
-# public_id values this app creates: "<folder>/players|teams|gallery/<32 hex>".
-_OWNED_KEY = re.compile(r"^(?P<folder>.+)/(?P<kind>players|teams|gallery|videos)/(?P<id>[0-9a-f]{32})$")
+# public_id values this app creates: "<folder>/players|teams|gallery|videos|admins/<32 hex>".
+_OWNED_KEY = re.compile(r"^(?P<folder>.+)/(?P<kind>players|teams|gallery|videos|admins)/(?P<id>[0-9a-f]{32})$")
 
 
 def is_owned_image_key(key: object, folder: str) -> bool:

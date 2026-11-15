@@ -1,4 +1,11 @@
+from datetime import date, datetime
+
 from schemas.auth_schema import AdminResponse
+
+_ADMIN_COLUMNS = """
+    Id, Username, IsActive, FirstName, LastName, DateOfBirth, Gender,
+    PhoneCode, PhoneNumber, Email, AvatarUrl
+"""
 
 
 class AdminRepository:
@@ -6,11 +13,27 @@ class AdminRepository:
         self.db = db
 
     @staticmethod
+    def _as_date(value):
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return value
+
+    @staticmethod
     def _to_response(row: dict) -> AdminResponse:
         return AdminResponse(
             id=row["Id"],
             username=row["Username"],
             is_active=bool(row["IsActive"]),
+            first_name=row.get("FirstName"),
+            last_name=row.get("LastName"),
+            date_of_birth=AdminRepository._as_date(row.get("DateOfBirth")),
+            gender=row.get("Gender"),
+            phone_code=row.get("PhoneCode"),
+            phone_number=row.get("PhoneNumber"),
+            email=row.get("Email"),
+            avatar_url=row.get("AvatarUrl"),
         )
 
     def count_active(self) -> int:
@@ -28,7 +51,8 @@ class AdminRepository:
         cursor = self.db.cursor()
         cursor.execute(
             """
-            SELECT Id, Username, PasswordHash, PasswordSalt, PasswordIterations, TokenVersion, IsActive
+            SELECT Id, Username, PasswordHash, PasswordSalt, PasswordIterations, TokenVersion, IsActive,
+                   FirstName, LastName, DateOfBirth, Gender, PhoneCode, PhoneNumber, Email, AvatarUrl
             FROM tblAdmins
             WHERE Username = %s AND Void = 0
             """,
@@ -39,8 +63,8 @@ class AdminRepository:
     def get_by_id(self, admin_id: int) -> AdminResponse | None:
         cursor = self.db.cursor()
         cursor.execute(
-            """
-            SELECT Id, Username, IsActive
+            f"""
+            SELECT {_ADMIN_COLUMNS}
             FROM tblAdmins
             WHERE Id = %s AND Void = 0
             """,
@@ -52,8 +76,8 @@ class AdminRepository:
     def get_all(self) -> list[AdminResponse]:
         cursor = self.db.cursor()
         cursor.execute(
-            """
-            SELECT Id, Username, IsActive
+            f"""
+            SELECT {_ADMIN_COLUMNS}
             FROM tblAdmins
             WHERE Void = 0
             ORDER BY Username
@@ -67,14 +91,31 @@ class AdminRepository:
         password_hash: str,
         password_salt: str,
         password_iterations: int,
+        profile: dict | None = None,
     ) -> AdminResponse:
+        profile = profile or {}
         cursor = self.db.cursor()
         cursor.execute(
             """
-            INSERT INTO tblAdmins (Username, PasswordHash, PasswordSalt, PasswordIterations)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO tblAdmins (
+                Username, PasswordHash, PasswordSalt, PasswordIterations,
+                FirstName, LastName, DateOfBirth, Gender, PhoneCode, PhoneNumber, Email
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (username, password_hash, password_salt, password_iterations),
+            (
+                username,
+                password_hash,
+                password_salt,
+                password_iterations,
+                profile.get("first_name"),
+                profile.get("last_name"),
+                profile.get("date_of_birth"),
+                profile.get("gender"),
+                profile.get("phone_code"),
+                profile.get("phone_number"),
+                profile.get("email"),
+            ),
         )
         self.db.commit()
         return self.get_by_id(cursor.lastrowid)
@@ -88,6 +129,13 @@ class AdminRepository:
             "password_salt": "PasswordSalt",
             "password_iterations": "PasswordIterations",
             "is_active": "IsActive",
+            "first_name": "FirstName",
+            "last_name": "LastName",
+            "date_of_birth": "DateOfBirth",
+            "gender": "Gender",
+            "phone_code": "PhoneCode",
+            "phone_number": "PhoneNumber",
+            "email": "Email",
         }
         increment_token_version = values.pop("increment_token_version", False)
         fields = [f"{mapping[key]} = %s" for key in values]
@@ -114,6 +162,34 @@ class AdminRepository:
             WHERE Id = %s AND Void = 0
             """,
             (admin_id,),
+        )
+        self.db.commit()
+        return cursor.rowcount > 0
+
+    def get_avatar_key(self, admin_id: int) -> tuple[bool, str | None]:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            SELECT AvatarStorageKey
+            FROM tblAdmins
+            WHERE Id = %s AND Void = 0
+            """,
+            (admin_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False, None
+        return True, row["AvatarStorageKey"]
+
+    def set_avatar(self, admin_id: int, url: str | None, key: str | None) -> bool:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            UPDATE tblAdmins
+            SET AvatarUrl = %s, AvatarStorageKey = %s, UpdatedAt = SYSUTCDATETIME()
+            WHERE Id = %s AND Void = 0
+            """,
+            (url, key, admin_id),
         )
         self.db.commit()
         return cursor.rowcount > 0

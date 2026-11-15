@@ -1,4 +1,7 @@
-from pydantic import BaseModel, Field
+from datetime import date
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -12,13 +15,57 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 
-class AdminCreateRequest(BaseModel):
+class AdminProfileFields(BaseModel):
+    first_name: str | None = Field(None, max_length=100)
+    last_name: str | None = Field(None, max_length=100)
+    date_of_birth: date | None = None
+    gender: Literal["female", "male", "other"] | None = None
+    phone_code: str | None = Field(None, max_length=8, pattern=r"^\+[1-9]\d{0,3}$")
+    phone_number: str | None = Field(None, max_length=20, pattern=r"^\d{6,15}$")
+    email: str | None = Field(None, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+    @field_validator("first_name", "last_name", "phone_code", "phone_number", "email", mode="before")
+    @classmethod
+    def blank_to_none(cls, value):
+        if value is None or not isinstance(value, str):
+            return value
+        text = value.strip()
+        return text or None
+
+    @field_validator("gender", mode="before")
+    @classmethod
+    def normalize_gender(cls, value):
+        if isinstance(value, str):
+            text = value.strip().lower()
+            return text or None
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value):
+        return value.lower() if isinstance(value, str) else value
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def birth_date_not_in_the_future(cls, value):
+        if value is not None and value > date.today():
+            raise ValueError("Date of birth cannot be in the future.")
+        return value
+
+    @model_validator(mode="after")
+    def contact_number_is_complete(self):
+        if (self.phone_code is None) != (self.phone_number is None):
+            raise ValueError("Contact number needs both a country code and a number.")
+        return self
+
+
+class AdminCreateRequest(AdminProfileFields):
     username: str = Field(..., min_length=3, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
     password: str = Field(..., min_length=12, max_length=256)
     permissions: list[str] = Field(default_factory=list, max_length=100)
 
 
-class AdminUpdateRequest(BaseModel):
+class AdminUpdateRequest(AdminProfileFields):
     username: str | None = Field(None, min_length=3, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
     password: str | None = Field(None, min_length=12, max_length=256)
     is_active: bool | None = None
@@ -33,6 +80,14 @@ class AdminResponse(BaseModel):
     username: str
     is_active: bool
     permissions: list[str] = Field(default_factory=list)
+    first_name: str | None = None
+    last_name: str | None = None
+    date_of_birth: date | None = None
+    gender: str | None = None
+    phone_code: str | None = None
+    phone_number: str | None = None
+    email: str | None = None
+    avatar_url: str | None = None
 
 
 class PermissionResponse(BaseModel):

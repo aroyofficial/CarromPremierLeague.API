@@ -44,7 +44,7 @@ class GalleryUpdateRequest(BaseModel):
 
 
 class GalleryOrderRequest(BaseModel):
-    season_id: int
+    season_id: Optional[int] = None
     item_ids: list[int] = Field(default_factory=list)
 
 

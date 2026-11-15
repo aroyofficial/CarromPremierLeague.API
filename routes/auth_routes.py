@@ -1,7 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from core.database import get_db
+from core.storage import MediaStorage, get_storage
 from core.permissions import (
     AREA_NAMES,
     AREAS,
@@ -9,6 +12,7 @@ from core.permissions import (
     CREATE_ADMINS,
     DELETE_ADMINS,
     MANAGE_PERMISSIONS,
+    UPDATE_ADMINS,
     ROLES,
     SECTIONS,
     VIEW_ADMINS,
@@ -34,6 +38,7 @@ from schemas.auth_schema import (
     TokenResponse,
 )
 from services.auth_service import AuthService
+from services.media_service import MediaService
 
 
 router = APIRouter(tags=["Authentication"])
@@ -42,6 +47,19 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 def get_service(db=Depends(get_db)) -> AuthService:
     return AuthService(AdminRepository(db), PermissionRepository(db))
+
+
+def get_admin_media(
+    db=Depends(get_db),
+    storage: Optional[MediaStorage] = Depends(get_storage),
+) -> MediaService:
+    return MediaService(storage, admin_repository=AdminRepository(db))
+
+
+def _can_edit_admin(admin_id: int, current: AdminResponse) -> None:
+    if current.id == admin_id or UPDATE_ADMINS in current.permissions:
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=denied_message([UPDATE_ADMINS]))
 
 
 def get_current_admin(
@@ -235,6 +253,32 @@ def set_admin_permissions(
         message="Permissions saved successfully.",
         data=service.set_permissions(admin_id, request, current),
     )
+
+
+@router.put("/admins/{admin_id}/avatar", response_model=ApiResponse[AdminResponse], summary="Set admin profile picture")
+def upload_admin_avatar(
+    admin_id: int,
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
+    current: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+    media: MediaService = Depends(get_admin_media),
+):
+    _can_edit_admin(admin_id, current)
+    media.apply_admin_picture(admin_id, file, url)
+    return ApiResponse(success=True, message="Profile picture updated successfully.", data=service.get_admin(admin_id))
+
+
+@router.delete("/admins/{admin_id}/avatar", response_model=ApiResponse[AdminResponse], summary="Remove admin profile picture")
+def remove_admin_avatar(
+    admin_id: int,
+    current: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+    media: MediaService = Depends(get_admin_media),
+):
+    _can_edit_admin(admin_id, current)
+    media.remove_admin_avatar(admin_id)
+    return ApiResponse(success=True, message="Profile picture removed successfully.", data=service.get_admin(admin_id))
 
 
 @router.delete("/admins/{admin_id}", response_model=ApiResponse[bool], summary="Delete admin")
