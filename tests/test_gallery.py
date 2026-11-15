@@ -113,18 +113,17 @@ class MemoryGallery:
             updated += 1
         return updated
 
-    def void(self, item_id, admin_id):
+    def delete(self, item_id):
         item = self.get(item_id)
         if item is None:
             return None
-        for key, link in self.links.items():
-            if key[0] == item_id:
-                link["cover"] = False
-        item["void"] = True
+        for key in [key for key in self.links if key[0] == item_id]:
+            del self.links[key]
+        del self.items[item_id]
         return item
 
-    def void_many(self, item_ids, admin_id):
-        return [row for item_id in item_ids if (row := self.void(item_id, admin_id)) is not None]
+    def delete_many(self, item_ids):
+        return [row for item_id in item_ids if (row := self.delete(item_id)) is not None]
 
     def season_ids_for(self, item_ids, public_only=False):
         grouped = {}
@@ -296,6 +295,16 @@ class GalleryRuleTests(unittest.TestCase):
 
     def test_png_pixel_size_is_read_from_the_header(self):
         self.assertEqual(image_pixel_size(_png(640, 480)), (640, 480))
+
+    def test_delete_removes_the_row_and_its_season_links(self):
+        photo = self._link(seasons="1,3")
+        self.service.delete(photo.id, self.curator)
+        self.assertNotIn(photo.id, self.repo.items)
+        self.assertFalse([key for key in self.repo.links if key[0] == photo.id])
+        others = [self._link(url=f"https://cdn.example/{n}.jpg") for n in range(2)]
+        result = self.service.bulk(GalleryBulkRequest(action="delete", ids=[item.id for item in others]), self.curator)
+        self.assertEqual(result.updated, 2)
+        self.assertFalse(any(item.id in self.repo.items for item in others))
 
     def test_item_can_be_saved_with_no_season(self):
         photo = self._link(url="https://cdn.example/unassigned.jpg", seasons="")

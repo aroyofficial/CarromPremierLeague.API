@@ -148,26 +148,19 @@ class GalleryRepository:
         )
         return int(cursor.rowcount or 0)
 
-    def void(self, item_id: int, admin_id: int) -> dict | None:
+    def delete(self, item_id: int) -> dict | None:
         row = self.get(item_id)
         if row is None:
             return None
         cursor = self.db.cursor()
-        cursor.execute("UPDATE tblGalleryItemSeasons SET IsCover = 0 WHERE ItemId = %s", (item_id,))
-        cursor.execute(
-            """
-            UPDATE tblGalleryItems
-            SET Void = 1, UpdatedBy = %s, UpdatedAt = SYSUTCDATETIME()
-            WHERE Id = %s AND Void = 0
-            """,
-            (admin_id, item_id),
-        )
+        cursor.execute("DELETE FROM tblGalleryItemSeasons WHERE ItemId = %s", (item_id,))
+        cursor.execute("DELETE FROM tblGalleryItems WHERE Id = %s", (item_id,))
         return row
 
-    def void_many(self, item_ids: list[int], admin_id: int) -> list[dict]:
+    def delete_many(self, item_ids: list[int]) -> list[dict]:
         rows = []
         for item_id in item_ids:
-            row = self.void(item_id, admin_id)
+            row = self.delete(item_id)
             if row is not None:
                 rows.append(row)
         return rows

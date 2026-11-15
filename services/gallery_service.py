@@ -362,7 +362,7 @@ class GalleryService:
             self.repository.replace_seasons(item_id, seasons)
         except Exception:
             if item_id is not None:
-                self.repository.void(item_id, admin.id)
+                self.repository.delete(item_id)
             if stored is not None:
                 self._forget(stored.key)
             raise
@@ -422,13 +422,13 @@ class GalleryService:
             seasons = self._seasons(payload.season_ids)
             return GalleryBulkResult(updated=self.repository.add_seasons(ids, seasons))
         self._need(admin, "gallery.delete")
-        rows = self.repository.void_many(ids, admin.id)
+        rows = self.repository.delete_many(ids)
         for row in rows:
             self._forget(row.get("StorageKey"))
         return GalleryBulkResult(updated=len(rows))
 
     def delete(self, item_id: int, admin) -> None:
-        row = self.repository.void(item_id, admin.id)
+        row = self.repository.delete(item_id)
         if row is None:
             raise HTTPException(status_code=404, detail="That photo is not in the gallery.")
         self._forget(row.get("StorageKey"))
