@@ -115,6 +115,24 @@ class RateLimiter:
 
 public_limiter = RateLimiter(limit=20)
 admin_limiter = RateLimiter(limit=40)
+OFF_REPLY = "Striker is turned off. An admin can switch it on from Settings."
+
+
+def _off_response():
+    return ApiResponse(success=True, message=None, data=ChatResponse(reply=OFF_REPLY))
+
+
+async def assistant_is_enabled(app) -> bool:
+    """Read the switch and release the connection before any model call. Unreadable means off."""
+    executor = ToolExecutor(app, public=True)
+    try:
+        code, payload = await executor._call("GET", "/settings")
+    except Exception:
+        return False
+    finally:
+        await executor.close()
+    data = payload.get("data") if code == 200 and isinstance(payload, dict) else None
+    return bool(data.get("assistant_enabled")) if isinstance(data, dict) else False
 
 
 def _client_key(request: Request) -> str:
@@ -153,6 +171,8 @@ async def assistant_status():
 @router.post("/public/chat", response_model=ApiResponse[ChatResponse])
 async def public_chat(payload: ChatRequest, request: Request):
     public_limiter.check(_client_key(request))
+    if not await assistant_is_enabled(request.app):
+        return _off_response()
     history = [turn.model_dump() for turn in payload.history]
     return await _run(request, "public", None, lambda engine: engine.chat(payload.message, history))
 
@@ -164,6 +184,8 @@ async def admin_chat(
     admin: AdminResponse = Depends(get_current_admin),
 ):
     admin_limiter.check(f"admin:{admin.id}")
+    if not await assistant_is_enabled(request.app):
+        return _off_response()
     history = [turn.model_dump() for turn in payload.history]
 
     async def work(engine: Engine):
@@ -183,6 +205,8 @@ async def admin_confirm(
     admin: AdminResponse = Depends(get_current_admin),
 ):
     admin_limiter.check(f"admin:{admin.id}")
+    if not await assistant_is_enabled(request.app):
+        return _off_response()
 
     async def work(engine: Engine):
         if not payload.approve:

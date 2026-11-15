@@ -20,5 +20,6 @@ class SettingsService:
             extra_minutes=request.extra_minutes,
             league_queen=request.league_queen,
             queen_needs_cover=queen_needs_cover(request.league_queen, request.queen_needs_cover),
+            assistant_enabled=request.assistant_enabled,
         )
         return self.repository.save(stored)

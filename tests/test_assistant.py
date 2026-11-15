@@ -401,6 +401,42 @@ class RouteTests(unittest.TestCase):
             app.dependency_overrides.pop(get_service, None)
         self.assertEqual(response.status_code, 401)
 
+    def test_a_turned_off_assistant_does_not_call_a_provider(self):
+        from unittest.mock import AsyncMock, patch
+
+        from fastapi.testclient import TestClient
+
+        from main import app
+        from routes import assistant_routes
+
+        with patch.object(assistant_routes, "assistant_is_enabled", new=AsyncMock(return_value=False)):
+            response = TestClient(app).post("/assistant/public/chat", json={"message": "Who is leading?"})
+        body = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("turned off", body["data"]["reply"])
+        self.assertIsNone(body["data"]["provider"])
+
+    def test_the_switch_is_read_before_any_model_call(self):
+        from routes.assistant_routes import assistant_is_enabled
+
+        off = FastAPI()
+
+        @off.get("/settings")
+        def settings_off():
+            return {"success": True, "message": None, "data": {"assistant_enabled": False}}
+
+        on = FastAPI()
+
+        @on.get("/settings")
+        def settings_on():
+            return {"success": True, "message": None, "data": {"assistant_enabled": True}}
+
+        unread = FastAPI()
+
+        self.assertFalse(run(assistant_is_enabled(off)))
+        self.assertTrue(run(assistant_is_enabled(on)))
+        self.assertFalse(run(assistant_is_enabled(unread)))
+
 
 if __name__ == "__main__":
     unittest.main()

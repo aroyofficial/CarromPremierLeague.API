@@ -6,3 +6,4 @@ class CompetitionSettings(BaseModel):
     extra_minutes: int = Field(ge=1, le=10)
     league_queen: bool
     queen_needs_cover: bool
+    assistant_enabled: bool = True

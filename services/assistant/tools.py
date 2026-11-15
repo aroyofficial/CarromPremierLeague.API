@@ -438,7 +438,7 @@ ADMIN_WRITES: list[Tool] = [
     _write(
         "update_competition_settings",
         "Update competition rules",
-        "Replace the competition rules. Read get_competition_settings first and send every field.",
+        "Replace the competition rules. assistant_enabled turns the Striker chatbot on or off. Read get_competition_settings first and send every field.",
         "PUT",
         "/settings",
         ("settings.update",),
@@ -510,7 +510,7 @@ ADMIN_WRITES: list[Tool] = [
     _write(
         "create_admin",
         "Create admin",
-        "Create an admin account with optional profile details and permission codes.",
+        "Create an inactive admin. Email and contact number are required. A temporary password is generated and emailed; do not send a password.",
         "POST",
         "/admins",
         ("admins.create",),

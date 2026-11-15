@@ -21,7 +21,12 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from core.security import PASSWORD_ITERATIONS, decode_access_token, hash_password
-from schemas.auth_schema import AdminCreateRequest, AdminUpdateRequest, LoginRequest
+from schemas.auth_schema import (
+    AdminCreateRequest,
+    AdminUpdateRequest,
+    LoginRequest,
+    ResetPasswordRequest,
+)
 from services.auth_service import AuthService
 
 
@@ -59,12 +64,19 @@ class FakeAdminRepository:
             phone_number=item.get("PhoneNumber"),
             email=item.get("Email"),
             avatar_url=item.get("AvatarUrl"),
+            must_change_password=bool(item.get("MustChangePassword")),
         )
 
     def get_all(self):
         return [self.get_by_id(item["Id"]) for item in self.records.values() if not item["Void"]]
 
-    def create(self, username, password_hash, password_salt, password_iterations, profile=None):
+    def find_email(self, email):
+        for item in self.records.values():
+            if not item["Void"] and item.get("Email") == email:
+                return item["Id"]
+        return None
+
+    def create(self, username, password_hash, password_salt, password_iterations, profile=None, is_active=True, must_change_password=False):
         admin_id = self.next_id
         self.next_id += 1
         profile = profile or {}
@@ -75,7 +87,8 @@ class FakeAdminRepository:
             "PasswordSalt": password_salt,
             "PasswordIterations": password_iterations,
             "TokenVersion": 1,
-            "IsActive": True,
+            "IsActive": is_active,
+            "MustChangePassword": must_change_password,
             "Void": False,
             "FirstName": profile.get("first_name"),
             "LastName": profile.get("last_name"),
@@ -99,6 +112,7 @@ class FakeAdminRepository:
                 "password_salt": "PasswordSalt",
                 "password_iterations": "PasswordIterations",
                 "is_active": "IsActive",
+                "must_change_password": "MustChangePassword",
                 "first_name": "FirstName",
                 "last_name": "LastName",
                 "date_of_birth": "DateOfBirth",
@@ -224,21 +238,111 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(created.phone_code, "+44")
         self.assertEqual(created.date_of_birth, date(1815, 12, 10))
 
-        cleared = self.service.update_admin(
+        renamed = self.service.update_admin(
             created.id,
-            AdminUpdateRequest(last_name="King", phone_code=None, phone_number=None, email=None),
+            AdminUpdateRequest(last_name="King"),
             self.primary,
         )
-        self.assertEqual(cleared.last_name, "King")
-        self.assertEqual(cleared.first_name, "Ada")
-        self.assertIsNone(cleared.phone_number)
-        self.assertIsNone(cleared.email)
+        self.assertEqual(renamed.last_name, "King")
+        self.assertEqual(renamed.email, "ada@example.com")
+        with self.assertRaises(HTTPException):
+            self.service.update_admin(created.id, AdminUpdateRequest(email=None), self.primary)
+        with self.assertRaises(HTTPException):
+            self.service.update_admin(
+                created.id,
+                AdminUpdateRequest(phone_code=None, phone_number=None),
+                self.primary,
+            )
 
     def test_profile_rejects_a_partial_phone_and_a_future_birthday(self):
         with self.assertRaises(ValidationError):
             AdminCreateRequest(username="ada-admin", password="another-password-123", phone_number="7700900123")
         with self.assertRaises(ValidationError):
             AdminCreateRequest(username="ada-admin", password="another-password-123", date_of_birth=date(2999, 1, 1))
+
+    def test_new_admin_stays_off_until_the_emailed_password_is_changed(self):
+        created = self.service.create_admin(
+            AdminCreateRequest(
+                username="new-admin",
+                email="new-admin@example.com",
+                phone_code="+91",
+                phone_number="9000000099",
+                first_name="New",
+            ),
+            self.primary,
+        )
+        self.assertFalse(created.is_active)
+        self.assertTrue(created.must_change_password)
+        welcome = self.service.mailer.sent[-1]
+        self.assertIn("default password", welcome.text.lower())
+        self.assertIn("new-admin@example.com", welcome.html)
+        self.assertIn("+91 9000000099", welcome.text)
+        password = welcome.text.split("Temporary password: ", 1)[1].splitlines()[0]
+        self.assertNotIn("another-password", password)
+        token = self.service.login(LoginRequest(username="new-admin", password=password))
+        self.assertTrue(token.must_change_password)
+        with self.assertRaises(HTTPException):
+            self.service.login(LoginRequest(username="new-admin", password="correct-horse-battery"))
+        activated = self.service.update_admin(
+            created.id,
+            AdminUpdateRequest(password="replacement-password"),
+            self.service.current_admin(token.access_token),
+        )
+        self.assertTrue(activated.is_active)
+        self.assertFalse(activated.must_change_password)
+        self.assertIn("now active", self.service.mailer.sent[-1].text.lower() + self.service.mailer.sent[-1].html.lower())
+        signed_in = self.service.login(LoginRequest(username="new-admin", password="replacement-password"))
+        self.assertFalse(signed_in.must_change_password)
+
+    def test_changing_an_email_needs_the_code_sent_to_it(self):
+        created = self.service.create_admin(
+            AdminCreateRequest(
+                username="mail-admin",
+                email="mail-admin@example.com",
+                phone_code="+91",
+                phone_number="9000000088",
+            ),
+            self.primary,
+        )
+        with self.assertRaises(HTTPException):
+            self.service.update_admin(
+                created.id,
+                AdminUpdateRequest(email="next@example.com"),
+                self.primary,
+            )
+        self.service.request_email_code(created.id, "next@example.com", self.primary)
+        code = self.service.mailer.sent[-1].text.split("Code: ", 1)[1].splitlines()[0]
+        updated = self.service.update_admin(
+            created.id,
+            AdminUpdateRequest(email="next@example.com", email_code=code),
+            self.primary,
+        )
+        self.assertEqual(updated.email, "next@example.com")
+
+    def test_password_reset_uses_the_username(self):
+        self.service.request_password_reset("primary-admin")
+        self.assertEqual(self.service.mailer.sent, [])
+        self.service.request_email_code(self.primary.id, "owner@example.com", self.primary)
+        code = self.service.mailer.sent[-1].text.split("Code: ", 1)[1].splitlines()[0]
+        self.service.update_admin(
+            self.primary.id,
+            AdminUpdateRequest(email="owner@example.com", email_code=code, phone_code="+91", phone_number="9000000077"),
+            self.primary,
+        )
+        self.service.request_password_reset("PRIMARY-ADMIN")
+        reset_code = self.service.mailer.sent[-1].text.split("Code: ", 1)[1].splitlines()[0]
+        self.service.reset_password(ResetPasswordRequest(
+            username="primary-admin",
+            code=reset_code,
+            password="reset-password-123",
+        ))
+        self.service.login(LoginRequest(username="primary-admin", password="reset-password-123"))
+        with self.assertRaises(HTTPException):
+            self.service.login(LoginRequest(username="primary-admin", password="correct-horse-battery"))
+
+    def test_unknown_username_reset_does_not_reveal_the_account(self):
+        self.service.request_password_reset("missing-admin")
+        self.assertEqual(self.service.mailer.sent, [])
 
     def test_second_bootstrap_is_rejected(self):
         with self.assertRaises(HTTPException) as raised:

@@ -5,6 +5,7 @@ DEFAULTS = CompetitionSettings(
     extra_minutes=5,
     league_queen=False,
     queen_needs_cover=False,
+    assistant_enabled=True,
 )
 
 
@@ -21,7 +22,8 @@ class SettingsRepository:
                 RegulationMinutes,
                 ExtraMinutes,
                 LeagueQueen,
-                QueenNeedsCover
+                QueenNeedsCover,
+                AssistantEnabled
             FROM tblSettings
             WHERE Id = 1
             """
@@ -33,12 +35,14 @@ class SettingsRepository:
                 extra_minutes=DEFAULTS.extra_minutes,
                 league_queen=DEFAULTS.league_queen,
                 queen_needs_cover=DEFAULTS.queen_needs_cover,
+                assistant_enabled=DEFAULTS.assistant_enabled,
             )
         return CompetitionSettings(
             regulation_minutes=int(row["RegulationMinutes"]),
             extra_minutes=int(row["ExtraMinutes"]),
             league_queen=bool(row["LeagueQueen"]),
             queen_needs_cover=bool(row["QueenNeedsCover"]),
+            assistant_enabled=bool(row["AssistantEnabled"]),
         )
 
     def save(self, settings: CompetitionSettings) -> CompetitionSettings:
@@ -50,6 +54,7 @@ class SettingsRepository:
                 ExtraMinutes = %s,
                 LeagueQueen = %s,
                 QueenNeedsCover = %s,
+                AssistantEnabled = %s,
                 UpdatedAt = SYSUTCDATETIME()
             WHERE Id = 1
             """,
@@ -58,21 +63,23 @@ class SettingsRepository:
                 settings.extra_minutes,
                 int(settings.league_queen),
                 int(settings.queen_needs_cover),
+                int(settings.assistant_enabled),
             ),
         )
         if cursor.rowcount == 0:
             cursor.execute(
                 """
                 INSERT INTO tblSettings (
-                    Id, RegulationMinutes, ExtraMinutes, LeagueQueen, QueenNeedsCover
+                    Id, RegulationMinutes, ExtraMinutes, LeagueQueen, QueenNeedsCover, AssistantEnabled
                 )
-                VALUES (1, %s, %s, %s, %s)
+                VALUES (1, %s, %s, %s, %s, %s)
                 """,
                 (
                     settings.regulation_minutes,
                     settings.extra_minutes,
                     int(settings.league_queen),
                     int(settings.queen_needs_cover),
+                    int(settings.assistant_enabled),
                 ),
             )
         self.db.commit()

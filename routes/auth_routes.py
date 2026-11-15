@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from core.database import get_db
@@ -28,7 +28,10 @@ from schemas.auth_schema import (
     AdminPermissionsUpdate,
     AdminResponse,
     AdminUpdateRequest,
+    EmailCodeRequest,
+    ForgotPasswordRequest,
     LoginRequest,
+    ResetPasswordRequest,
     PermissionAreaNode,
     PermissionNode,
     PermissionResponse,
@@ -37,7 +40,9 @@ from schemas.auth_schema import (
     PermissionTreeResponse,
     TokenResponse,
 )
+from services.admin_codes import SqlCodeStore
 from services.auth_service import AuthService
+from services.mailer import SmtpMailer
 from services.media_service import MediaService
 
 
@@ -46,7 +51,7 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def get_service(db=Depends(get_db)) -> AuthService:
-    return AuthService(AdminRepository(db), PermissionRepository(db))
+    return AuthService(AdminRepository(db), PermissionRepository(db), mailer=SmtpMailer(), codes=SqlCodeStore(db))
 
 
 def get_admin_media(
@@ -62,7 +67,15 @@ def _can_edit_admin(admin_id: int, current: AdminResponse) -> None:
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=denied_message([UPDATE_ADMINS]))
 
 
+def _pending_password_allowed(request: Request, admin: AdminResponse) -> bool:
+    path = request.url.path.rstrip("/") or "/"
+    if request.method == "GET" and path == "/auth/me":
+        return True
+    return request.method == "PATCH" and path == f"/admins/{admin.id}"
+
+
 def get_current_admin(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     service: AuthService = Depends(get_service),
 ) -> AdminResponse:
@@ -72,7 +85,13 @@ def get_current_admin(
             detail="Bearer authentication is required.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return service.current_admin(credentials.credentials)
+    admin = service.current_admin(credentials.credentials)
+    if admin.must_change_password and not _pending_password_allowed(request, admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Change the temporary password to activate this account.",
+        )
+    return admin
 
 
 def require_permission(*codes: str):
@@ -112,6 +131,22 @@ def bootstrap_admin(request: AdminCreateRequest, service: AuthService = Depends(
         message="Initial admin created successfully.",
         data=service.bootstrap_admin(request),
     )
+
+
+@router.post("/auth/forgot-password", response_model=ApiResponse[bool], summary="Email a password reset code")
+def forgot_password(request: ForgotPasswordRequest, service: AuthService = Depends(get_service)):
+    service.request_password_reset(request.username)
+    return ApiResponse(
+        success=True,
+        message="If that username has an email address, a reset code is on its way.",
+        data=True,
+    )
+
+
+@router.post("/auth/reset-password", response_model=ApiResponse[bool], summary="Reset a password with a code")
+def reset_password(request: ResetPasswordRequest, service: AuthService = Depends(get_service)):
+    service.reset_password(request)
+    return ApiResponse(success=True, message="Password updated. You can sign in with it now.", data=True)
 
 
 @router.get("/auth/me", response_model=ApiResponse[AdminResponse], summary="Current admin")
@@ -218,9 +253,24 @@ def create_admin(
 ):
     return ApiResponse(
         success=True,
-        message="Admin created successfully.",
+        message="Admin created. The temporary password was emailed and the account stays off until they change it.",
         data=service.create_admin(request, current),
     )
+
+
+@router.post(
+    "/admins/{admin_id}/email-code",
+    response_model=ApiResponse[bool],
+    summary="Email a code to confirm an address",
+)
+def email_code(
+    admin_id: int,
+    request: EmailCodeRequest,
+    current: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+):
+    service.request_email_code(admin_id, request.email, current)
+    return ApiResponse(success=True, message="A code was sent to that email address.", data=True)
 
 
 @router.patch("/admins/{admin_id}", response_model=ApiResponse[AdminResponse], summary="Update admin")

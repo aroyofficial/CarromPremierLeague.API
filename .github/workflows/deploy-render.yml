@@ -54,6 +54,13 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CPL_SMTP_HOST: ${{ secrets.CPL_SMTP_HOST }}
+          CPL_SMTP_PORT: ${{ secrets.CPL_SMTP_PORT }}
+          CPL_SMTP_USERNAME: ${{ secrets.CPL_SMTP_USERNAME }}
+          CPL_SMTP_PASSWORD: ${{ secrets.CPL_SMTP_PASSWORD }}
+          CPL_SMTP_FROM: ${{ secrets.CPL_SMTP_FROM }}
+          CPL_SMTP_FROM_NAME: ${{ secrets.CPL_SMTP_FROM_NAME }}
+          CPL_PUBLIC_WEB_URL: ${{ vars.CPL_PUBLIC_WEB_URL }}
           CPL_GEMINI_MODEL: ${{ vars.CPL_GEMINI_MODEL }}
           CPL_GROQ_MODEL: ${{ vars.CPL_GROQ_MODEL }}
           CPL_OPENROUTER_MODEL: ${{ vars.CPL_OPENROUTER_MODEL }}
@@ -100,6 +107,18 @@ jobs:
           done
           if [ "${assistant_keys}" = "0" ]; then
             echo "::warning::No GEMINI_API_KEY, GROQ_API_KEY or OPENROUTER_API_KEY secret is set; the Striker assistant keeps any key already on Render."
+          fi
+          mail_keys=0
+          for pair in CPL_SMTP_HOST:CPL_SMTP_HOST CPL_SMTP_PORT:CPL_SMTP_PORT CPL_SMTP_USERNAME:CPL_SMTP_USERNAME CPL_SMTP_PASSWORD:CPL_SMTP_PASSWORD CPL_SMTP_FROM:CPL_SMTP_FROM CPL_SMTP_FROM_NAME:CPL_SMTP_FROM_NAME CPL_PUBLIC_WEB_URL:CPL_PUBLIC_WEB_URL; do
+            secret="${pair%%:*}"
+            target="${pair##*:}"
+            if [ -n "${!secret}" ]; then
+              set_env_var "${target}" "${!secret}"
+              mail_keys=$((mail_keys + 1))
+            fi
+          done
+          if [ "${mail_keys}" = "0" ]; then
+            echo "::warning::No SMTP secrets are set. Admin mail keeps whatever sender is already configured on Render."
           fi
 
       - name: Ask Render to deploy this commit

@@ -13,6 +13,7 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+    must_change_password: bool = False
 
 
 class AdminProfileFields(BaseModel):
@@ -61,7 +62,12 @@ class AdminProfileFields(BaseModel):
 
 class AdminCreateRequest(AdminProfileFields):
     username: str = Field(..., min_length=3, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
-    password: str = Field(..., min_length=12, max_length=256)
+    password: str | None = Field(
+        None,
+        min_length=12,
+        max_length=256,
+        description="Ignored when an admin creates the account. The system generates a temporary password.",
+    )
     permissions: list[str] = Field(default_factory=list, max_length=100)
 
 
@@ -69,6 +75,26 @@ class AdminUpdateRequest(AdminProfileFields):
     username: str | None = Field(None, min_length=3, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
     password: str | None = Field(None, min_length=12, max_length=256)
     is_active: bool | None = None
+    email_code: str | None = Field(None, min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class EmailCodeRequest(BaseModel):
+    email: str = Field(..., max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class ForgotPasswordRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=100)
+
+
+class ResetPasswordRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=100)
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
+    password: str = Field(..., min_length=12, max_length=256)
 
 
 class AdminPermissionsUpdate(BaseModel):
@@ -88,6 +114,7 @@ class AdminResponse(BaseModel):
     phone_number: str | None = None
     email: str | None = None
     avatar_url: str | None = None
+    must_change_password: bool = False
 
 
 class PermissionResponse(BaseModel):

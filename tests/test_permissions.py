@@ -49,7 +49,13 @@ class CatalogTests(unittest.TestCase):
         self.assertLessEqual(used, ALL_CODES)
 
     def test_every_write_route_names_a_permission_or_requires_sign_in(self):
-        open_writes = {("POST", "/auth/login"), ("POST", "/auth/bootstrap"), ("POST", "/assistant/public/chat")}
+        open_writes = {
+            ("POST", "/auth/login"),
+            ("POST", "/auth/bootstrap"),
+            ("POST", "/auth/forgot-password"),
+            ("POST", "/auth/reset-password"),
+            ("POST", "/assistant/public/chat"),
+        }
         routes = self._api_routes()
         self.assertGreater(len(routes), 40)
         for route in routes:
@@ -116,9 +122,26 @@ class AdminPermissionRuleTests(unittest.TestCase):
             AdminCreateRequest(username="owner", password="correct-horse-battery")
         )
 
+    def _activate(self, admin):
+        welcome = next(mail for mail in reversed(self.service.mailer.sent) if f"Username: {admin.username}" in mail.text)
+        password = welcome.text.split("Temporary password: ", 1)[1].splitlines()[0]
+        token = self.service.login(fakes.LoginRequest(username=admin.username, password=password))
+        return self.service.update_admin(
+            admin.id,
+            AdminUpdateRequest(password="replacement-password-1"),
+            self.service.current_admin(token.access_token),
+        )
+
     def _make(self, username, codes=()):
         created = self.service.create_admin(
-            AdminCreateRequest(username=username, password="correct-horse-battery", permissions=list(codes)),
+            AdminCreateRequest(
+                username=username,
+                password="correct-horse-battery",
+                permissions=list(codes),
+                email=f"{username}@example.com",
+                phone_code="+91",
+                phone_number="9000000001",
+            ),
             self.owner,
         )
         return created
@@ -144,7 +167,13 @@ class AdminPermissionRuleTests(unittest.TestCase):
             )
         self.assertEqual(raised.exception.status_code, 403)
         plain = self.service.create_admin(
-            AdminCreateRequest(username="plain", password="correct-horse-battery"),
+            AdminCreateRequest(
+                username="plain",
+                password="correct-horse-battery",
+                email="plain@example.com",
+                phone_code="+91",
+                phone_number="9000000002",
+            ),
             creator,
         )
         self.assertEqual(plain.permissions, [])
@@ -194,7 +223,7 @@ class AdminPermissionRuleTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
 
     def test_last_manager_cannot_lose_manage_or_be_disabled_or_deleted(self):
-        manager = self._make("manager", [MANAGE_PERMISSIONS])
+        manager = self._activate(self._make("manager", [MANAGE_PERMISSIONS]))
         self.service.set_permissions(
             self.owner.id,
             AdminPermissionsUpdate(permissions=[c for c in self.owner.permissions if c != MANAGE_PERMISSIONS]),
@@ -212,13 +241,13 @@ class AdminPermissionRuleTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
 
     def test_another_manager_allows_disable_and_delete(self):
-        manager = self._make("manager", [MANAGE_PERMISSIONS])
+        manager = self._activate(self._make("manager", [MANAGE_PERMISSIONS]))
         disabled = self.service.update_admin(manager.id, AdminUpdateRequest(is_active=False), self.owner)
         self.assertFalse(disabled.is_active)
         self.assertTrue(self.service.delete_admin(manager.id, self.owner))
 
     def test_self_service_profile_change_without_admins_update(self):
-        member = self._make("member", ["teams.create"])
+        member = self._activate(self._make("member", ["teams.create"]))
         renamed = self.service.update_admin(member.id, AdminUpdateRequest(username="member2"), member)
         self.assertEqual(renamed.username, "member2")
         with self.assertRaises(HTTPException) as raised:

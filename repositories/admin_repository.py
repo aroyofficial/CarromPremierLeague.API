@@ -3,7 +3,7 @@ from datetime import date, datetime
 from schemas.auth_schema import AdminResponse
 
 _ADMIN_COLUMNS = """
-    Id, Username, IsActive, FirstName, LastName, DateOfBirth, Gender,
+    Id, Username, IsActive, MustChangePassword, FirstName, LastName, DateOfBirth, Gender,
     PhoneCode, PhoneNumber, Email, AvatarUrl
 """
 
@@ -34,6 +34,7 @@ class AdminRepository:
             phone_number=row.get("PhoneNumber"),
             email=row.get("Email"),
             avatar_url=row.get("AvatarUrl"),
+            must_change_password=bool(row.get("MustChangePassword")),
         )
 
     def count_active(self) -> int:
@@ -52,13 +53,26 @@ class AdminRepository:
         cursor.execute(
             """
             SELECT Id, Username, PasswordHash, PasswordSalt, PasswordIterations, TokenVersion, IsActive,
-                   FirstName, LastName, DateOfBirth, Gender, PhoneCode, PhoneNumber, Email, AvatarUrl
+                   MustChangePassword, FirstName, LastName, DateOfBirth, Gender, PhoneCode, PhoneNumber, Email, AvatarUrl
             FROM tblAdmins
             WHERE Username = %s AND Void = 0
             """,
             (username,),
         )
         return cursor.fetchone()
+
+    def find_email(self, email: str) -> int | None:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            SELECT TOP (1) Id
+            FROM tblAdmins
+            WHERE Email = %s AND Void = 0
+            """,
+            (email,),
+        )
+        row = cursor.fetchone()
+        return int(row["Id"]) if row else None
 
     def get_by_id(self, admin_id: int) -> AdminResponse | None:
         cursor = self.db.cursor()
@@ -92,22 +106,26 @@ class AdminRepository:
         password_salt: str,
         password_iterations: int,
         profile: dict | None = None,
+        is_active: bool = True,
+        must_change_password: bool = False,
     ) -> AdminResponse:
         profile = profile or {}
         cursor = self.db.cursor()
         cursor.execute(
             """
             INSERT INTO tblAdmins (
-                Username, PasswordHash, PasswordSalt, PasswordIterations,
+                Username, PasswordHash, PasswordSalt, PasswordIterations, IsActive, MustChangePassword,
                 FirstName, LastName, DateOfBirth, Gender, PhoneCode, PhoneNumber, Email
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 username,
                 password_hash,
                 password_salt,
                 password_iterations,
+                int(is_active),
+                int(must_change_password),
                 profile.get("first_name"),
                 profile.get("last_name"),
                 profile.get("date_of_birth"),
@@ -129,6 +147,7 @@ class AdminRepository:
             "password_salt": "PasswordSalt",
             "password_iterations": "PasswordIterations",
             "is_active": "IsActive",
+            "must_change_password": "MustChangePassword",
             "first_name": "FirstName",
             "last_name": "LastName",
             "date_of_birth": "DateOfBirth",

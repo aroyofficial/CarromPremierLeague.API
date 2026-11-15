@@ -49,6 +49,17 @@ class Settings:
             self._get_optional_env("CPL_OPENROUTER_MODEL") or "meta-llama/llama-3.3-70b-instruct:free"
         )
 
+        self.SMTP_HOST: str | None = self._get_optional_env("CPL_SMTP_HOST")
+        self.SMTP_PORT: int = int(self._get_optional_env("CPL_SMTP_PORT") or "587")
+        self.SMTP_USERNAME: str | None = self._get_optional_env("CPL_SMTP_USERNAME")
+        self.SMTP_PASSWORD: str | None = self._get_optional_env("CPL_SMTP_PASSWORD")
+        self.SMTP_FROM: str | None = self._get_optional_env("CPL_SMTP_FROM")
+        self.SMTP_FROM_NAME: str = self._get_optional_env("CPL_SMTP_FROM_NAME") or "Carrom Premier League"
+        self.SMTP_STARTTLS: bool = (self._get_optional_env("CPL_SMTP_STARTTLS") or "true").lower() != "false"
+        self.PUBLIC_WEB_URL: str = (
+            self._get_optional_env("CPL_PUBLIC_WEB_URL") or "https://aroyofficial.github.io/CarromPremierLeague.Web"
+        ).rstrip("/")
+
     @staticmethod
     def _get_optional_env(key: str) -> str | None:
         value = os.getenv(key)

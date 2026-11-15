@@ -81,7 +81,14 @@ class HierarchyRuleTests(unittest.TestCase):
             AdminCreateRequest(username="owner", password="correct-horse-battery")
         )
         self.target = self.service.create_admin(
-            AdminCreateRequest(username="target", password="correct-horse-battery", permissions=["matches.update"]),
+            AdminCreateRequest(
+                username="target",
+                password="correct-horse-battery",
+                permissions=["matches.update"],
+                email="target@example.com",
+                phone_code="+91",
+                phone_number="9000000003",
+            ),
             self.owner,
         )
 
@@ -112,7 +119,14 @@ class HierarchyRuleTests(unittest.TestCase):
 
     def test_creating_admin_without_view_stays_possible(self):
         created = self.service.create_admin(
-            AdminCreateRequest(username="recruiter", password="correct-horse-battery", permissions=["admins.create"]),
+            AdminCreateRequest(
+                username="recruiter",
+                password="correct-horse-battery",
+                permissions=["admins.create"],
+                email="recruiter@example.com",
+                phone_code="+91",
+                phone_number="9000000004",
+            ),
             self.owner,
         )
         self.assertEqual(created.permissions, ["admins.create"])

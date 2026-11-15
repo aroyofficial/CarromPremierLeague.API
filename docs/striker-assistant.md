@@ -68,3 +68,5 @@ The tools do not query the database directly. Each tool maps to an existing endp
 | `CPL_OPENROUTER_MODEL` | No | `meta-llama/llama-3.3-70b-instruct:free` |
 
 The Render deploy workflow copies the repository secrets `GEMINI_API_KEY`, `GROQ_API_KEY` and `OPENROUTER_API_KEY` into those variables when they are set. With no key configured, `GET /assistant/status` reports the assistant as unavailable and the widget says so instead of failing.
+
+`tblSettings.AssistantEnabled` is the on/off switch (`assistant_enabled` on `GET` and `PUT /settings`). It defaults to on. When an admin turns it off, the public site and the admin console hide the widget, and the chat and confirm endpoints answer that Striker is turned off without calling a model or applying a pending change. If settings cannot be read, the assistant stays off.
