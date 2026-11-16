@@ -279,7 +279,7 @@ def _render_groups(rows: list[dict]) -> str:
             endpoints.append(
                 "<li class=\"endpoint\">"
                 f'<span class="method method-{method}">{escape(item["method"])}</span>'
-                f'<code class="path">{escape(item["path"])}{query}</code>'
+                f'<code class="path">{escape(item["path"]).replace("/", "/<wbr>")}{query}</code>'
                 f'<p class="desc">{escape(item["description"])}</p>'
                 f"{note_html}"
                 "</li>"
