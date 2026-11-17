@@ -11,6 +11,7 @@ from core.config import settings
 from core.database import Database
 from core.realtime import (
     PUBLIC_CHANNEL,
+    STAFF_CHANNEL,
     HubFull,
     Ticket,
     admin_channel,
@@ -57,7 +58,11 @@ def _admin_still_valid(ticket: Ticket) -> bool:
     return bool(record["IsActive"]) or bool(record.get("MustChangePassword"))
 
 
-def _stream(request: Request, channel: str, queue, check=None, ends_at: float | None = None):
+def _kind(channels) -> str:
+    return "admin" if STAFF_CHANNEL in channels else "public"
+
+
+def _stream(request: Request, channels: tuple[str, ...], queue, check=None, ends_at: float | None = None):
     async def events():
         checked_at = None
         try:
@@ -80,8 +85,8 @@ def _stream(request: Request, channel: str, queue, check=None, ends_at: float | 
                     continue
                 yield format_sse(body)
         finally:
-            hub.unsubscribe(channel, queue)
-            logger.info("subscriber left channel=%s subscribers=%s", channel.split(":", 1)[0], hub.subscriber_count())
+            hub.unsubscribe(channels, queue)
+            logger.info("subscriber left channel=%s subscribers=%s", _kind(channels), hub.subscriber_count())
 
     return StreamingResponse(
         events(),
@@ -90,12 +95,12 @@ def _stream(request: Request, channel: str, queue, check=None, ends_at: float | 
     )
 
 
-async def _subscribe(channel: str):
+async def _subscribe(channels: tuple[str, ...]):
     try:
-        queue = await hub.subscribe(channel)
+        queue = await hub.subscribe(channels)
     except HubFull:
         raise HTTPException(status_code=503, detail="Too many realtime subscribers.") from None
-    logger.info("subscriber joined channel=%s subscribers=%s", channel.split(":", 1)[0], hub.subscriber_count())
+    logger.info("subscriber joined channel=%s subscribers=%s", _kind(channels), hub.subscriber_count())
     return queue
 
 
@@ -114,8 +119,9 @@ def realtime_health():
 @router.get("/public", summary="Public change notices")
 async def public_stream(request: Request):
     _require_on(request)
-    queue = await _subscribe(PUBLIC_CHANNEL)
-    return _stream(request, PUBLIC_CHANNEL, queue)
+    channels = (PUBLIC_CHANNEL,)
+    queue = await _subscribe(channels)
+    return _stream(request, channels, queue)
 
 
 @router.post("/ticket", summary="One-time ticket for this admin's private stream")
@@ -138,14 +144,14 @@ def admin_ticket(
     return {"ticket": value, "expires_in": tickets.ttl_seconds}
 
 
-@router.get("/admin", summary="This admin's private change notices")
+@router.get("/admin", summary="Public, staff, and this admin's own change notices")
 async def admin_stream(request: Request, ticket: str = ""):
     _require_on(request)
     granted = tickets.consume(ticket)
     if granted is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Ask for a new realtime ticket.")
-    channel = admin_channel(granted.admin_id)
-    queue = await _subscribe(channel)
+    channels = (PUBLIC_CHANNEL, STAFF_CHANNEL, admin_channel(granted.admin_id))
+    queue = await _subscribe(channels)
 
     async def check() -> bool:
         try:
@@ -154,4 +160,4 @@ async def admin_stream(request: Request, ticket: str = ""):
             logger.exception("realtime admin check failed")
             return False
 
-    return _stream(request, channel, queue, check=check, ends_at=float(granted.token_expires_at))
+    return _stream(request, channels, queue, check=check, ends_at=float(granted.token_expires_at))

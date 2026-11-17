@@ -1,6 +1,6 @@
 # Realtime hub
 
-Status: implemented for every polled public screen and for the admin session handoff, behind flags that default off. It runs in one process. It is not a multi-instance fan-out.
+Status: implemented for every public screen and every admin console screen that shows API data, behind flags that default off. It runs in one process. It is not a multi-instance fan-out.
 
 ## Feasibility
 
@@ -27,14 +27,20 @@ Use Server-Sent Events. The server sends a notice naming what changed; the brows
 | --- | --- | --- |
 | `GET /realtime/public` | anyone allowed to call the public GETs | `league.invalidated` |
 | `POST /realtime/ticket` | a signed-in admin (bearer token) | returns a one-time ticket, valid 60 seconds |
-| `GET /realtime/admin?ticket=...` | the admin the ticket was issued to | `admin.login_request.changed`, `realtime.revoked` |
+| `GET /realtime/admin?ticket=...` | the admin the ticket was issued to | everything on the public stream, plus `admin.invalidated`, `admin.login_request.changed`, `realtime.revoked` |
 | `GET /realtime/health` | anyone | enabled, backplane, subscribers, published, dropped, rejected |
+
+One admin stream subscribes to three channels: `public`, `staff` (every signed-in admin), and `admin:{id}` (that admin only). A signed-in tab therefore opens one connection, not two.
 
 Native `EventSource` cannot send `Authorization`. The JWT never goes in a URL. The web app posts for a ticket with its bearer token. The ticket is random, single use, held in memory for 60 seconds, and bound to the admin id, username, token version, and token expiry.
 
 ## Producers
 
-`PublicChangeMiddleware` (in `core/realtime.py`) publishes `league.invalidated` after any 2xx `POST`, `PUT`, `PATCH`, or `DELETE` under `/matches`, `/seasons`, `/teams`, `/players`, `/countries`, `/rosters`, or `/settings`. Those repositories call `commit()` inside the handler, so the notice goes out only after the change is stored. A failed write publishes nothing. `/auth`, `/admins`, `/assistant`, `/gallery`, and `/media` never publish on the public stream.
+`PublicChangeMiddleware` (in `core/realtime.py`) publishes `league.invalidated` after any 2xx `POST`, `PUT`, `PATCH`, or `DELETE` under `/matches`, `/seasons`, `/teams`, `/players`, `/countries`, `/rosters`, `/settings`, or `/gallery`. Season cover writes (`/seasons/{id}/gallery-cover`) count as `gallery`. Those repositories call `commit()` inside the handler, so the notice goes out only after the change is stored. A failed write publishes nothing. `/auth`, `/admins`, `/assistant`, and `/media` never publish on the public stream.
+
+The same middleware publishes `admin.invalidated` with area `admins` to the `staff` channel after a 2xx write under `/admins` or `/auth`, and area `me` to the writer's own channel and, for `/admins/{id}`, to that admin's channel. The writer is read from the bearer token; a forged or missing token only skips the personal notice. Sign-in writes under `/auth` also notify `staff`. That is a harmless extra refetch of the users list, chosen over keeping a list of which `/auth` routes change what.
+
+The Striker assistant's writes go through an in-process ASGI client into the same app, so they pass through this middleware too.
 
 `AuthService` publishes `admin.login_request.changed` to `admin:{id}` when another device asks to sign in, and when that request is approved or declined.
 
@@ -43,11 +49,14 @@ Native `EventSource` cannot send `Authorization`. The JWT never goes in a URL. T
 | Screen | Before | Now |
 | --- | --- | --- |
 | Schedule, Points table, Stats, Player stats, Players | 5s poll, plus when the tab becomes visible | refetch when a notice names an area that screen shows, and again when the stream opens or drops. 60s poll while the socket is healthy, 5s when it is down or off. Silence for 35s, or no open within 20s, counts as down. Visible-tab refetch unchanged |
-| Session handoff (admin) | 4s poll | same rules, with a 4s fallback. Each attempt asks for a new ticket, so a restart does not leave a dead one |
+| Teams, Fixtures, Gallery | loaded once | same rules as above |
+| Home, Rules, the header and admin sidebar | loaded once from the season, team, settings and profile stores | `App.vue` refetches those stores on a matching notice and whenever the stream reopens |
+| Every admin console screen (dashboard, matches, teams, seasons, players, countries, rosters, gallery, settings, users, permissions, profile, sign-in security) | loaded once | same rules, with a 15s fallback poll while the stream is down. The refresh never shows a spinner or an error toast. Screens with an editable draft (settings, permissions, profile, gallery ordering or selection) skip the refresh while there are unsaved edits |
+| Session handoff (admin) | 4s poll | same rules, with a 4s fallback |
 | Login wait (device asking to sign in) | 3s poll | unchanged, see below |
 | Match clock, countdown, password cooldown | local 1s timers | unchanged; no API |
 
-All public screens in a tab share one `EventSource` (`watchPublic` in `src/utils/realtime.js`). A screen listens only for the areas in `src/utils/realtimeRules.js`: a country edit refreshes the players page and leaves the points table alone. Reconnect uses exponential backoff with jitter, capped at 30 seconds, and reopens when the browser comes back online. The server sends `realtime.heartbeat` every 15 seconds. The browser ignores SSE comments, so the heartbeat is a real event and the client refetches nothing for it. If 35 seconds pass with no heartbeat and no notice, the client closes the socket, refetches, and polls every 5 seconds. A socket that never opens within 20 seconds is abandoned the same way. Events are applied once per event id. There is no stored replay: opening the stream refetches, which covers anything missed while it was down.
+Every screen in a tab shares one `EventSource` (the hub in `src/utils/realtimeHub.js`). Signed out, it reads `/realtime/public`. Signed in, it reads `/realtime/admin` with a fresh ticket per attempt, so a restart does not leave a dead one. Screens call `useLive` or `useAdminLive` (`src/utils/useLive.js`) and handle every notice type the same way: the notice reduces to one area, and the screen refetches if it shows that area. A screen listens only for the areas in `src/utils/realtimeRules.js`: a country edit refreshes the players page and leaves the points table alone. `src/utils/liveCoverage.test.mjs` fails the build's tests if a screen fetches API data without `useLive`, unless it is on a short exemption list with a reason. Reconnect uses exponential backoff with jitter, capped at 30 seconds, and reopens when the browser comes back online. The server sends `realtime.heartbeat` every 15 seconds. The browser ignores SSE comments, so the heartbeat is a real event and the client refetches nothing for it. If 35 seconds pass with no heartbeat and no notice, the client closes the socket, refetches, and polls every 5 seconds. A socket that never opens within 20 seconds is abandoned the same way. Events are applied once per event id. There is no stored replay: opening the stream refetches, which covers anything missed while it was down.
 
 The login wait stays on polling. The waiting device is not signed in, and its only credential is the request id. Putting the request id in a stream URL would leak it into access logs, and the wait lasts at most 10 minutes.
 
@@ -58,7 +67,8 @@ Common envelope: `eventId` (UUID, new per publish), `eventType`, `eventVersion` 
 | eventType | Channel | entityType / entityId | Payload | Client action |
 | --- | --- | --- | --- | --- |
 | `league.invalidated` | `public` | `area` / the route group, for example `matches` | `{ "area": "matches" }` | refetch if this screen displays that area |
-| `admin.login_request.changed` | `admin:{id}` | `admin` / the admin id | `{}` | call `GET /auth/login-request` |
+| `admin.invalidated` | `staff` or `admin:{id}` | `area` / `admins` or `me` | `{ "area": "admins" }` or `{ "area": "me" }` | refetch if this screen displays that area |
+| `admin.login_request.changed` | `admin:{id}` | `admin` / the admin id | `{}` | treated as area `loginRequest`; call `GET /auth/login-request` |
 | `realtime.revoked` | `admin:{id}` | none | `{}` | stop the stream, refetch, keep polling |
 | `realtime.heartbeat` | both | none | `{}` | proof the socket is alive. The browser cannot see SSE comments, so this is a real event. It does not refetch |
 
@@ -69,6 +79,7 @@ Delivery is at least once inside one process. There is no replay after a disconn
 - Both flags default off. Stream routes answer 404 when `CPL_REALTIME_ENABLED` is off.
 - `Origin`, when present, must be in `CPL_APP_ALLOWED_HOSTS`; otherwise 403.
 - Public notices name only a route group, which is no more than any public GET reveals.
+- Staff notices name only `admins` or `me`. The public stream never subscribes to `staff`.
 - The admin channel comes from the ticket on the server. The client cannot name a channel or another admin.
 - A missing, forged, reused, or expired ticket gets 401.
 - The admin stream re-reads the admin row on its first heartbeat (about 15 seconds) and then once a minute. If the account is inactive or the token version changed (logout elsewhere, approval of another device, password change), the server sends `realtime.revoked` and closes. API calls keep checking the token on every request, so this delay does not extend access to data. The stream also closes when the bearer token it was issued from expires.
@@ -101,6 +112,8 @@ Expected production load: one connection per open tab, well under 200 concurrent
 ## Tests
 
 - `tests/test_realtime.py`: the event envelope, area mapping, flag behaviour, hub isolation, the subscriber cap, slow-consumer drop, cross-thread publish, ticket single use, expiry, and ceiling. Route tests cover 404 when off, foreign origin 403, missing or forged ticket 401, a ticket requiring a signed-in admin, and publishing only after a successful public write. Live tests run uvicorn and read the stream over HTTP: a write reaches an open public stream, a private notice reaches only its admin, a used ticket cannot open a second stream, and a revoked admin stream is closed.
+- Staff notices: the gallery area mapping, `staff_notices` for admin and auth writes, notices only after a successful write (a forged token gets none), an admin stream receiving public, staff and its own notices, and the public stream never receiving staff notices.
+- Web `src/utils/realtimeHub.test.mjs`: one connection per tab, switching between the public and admin stream on sign-in and sign-out, and per-screen area filtering. `src/utils/liveCoverage.test.mjs`: every screen that fetches is live or exempt with a reason.
 - Web `src/utils/realtime.test.mjs` and `src/utils/realtimeStream.test.mjs`: dedupe, the bounded seen list, backoff, reconnect with a fresh URL, retry when there is no ticket, revoke stops for good, stop cancels the retry, and the poll slowing and speeding up with the stream state.
 - Not covered: a real browser against a deployed API.
 

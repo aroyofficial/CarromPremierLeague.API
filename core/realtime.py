@@ -23,8 +23,12 @@ TICKET_SECONDS = 60
 MAX_TICKETS = 1000
 
 PUBLIC_CHANNEL = "public"
+# Admin-only notices. Only ticketed admin streams subscribe, never the public stream.
+STAFF_CHANNEL = "staff"
 # First path segment of a successful write -> the area clients refetch.
-PUBLIC_AREAS = frozenset({"matches", "seasons", "teams", "players", "countries", "rosters", "settings"})
+PUBLIC_AREAS = frozenset({"matches", "seasons", "teams", "players", "countries", "rosters", "settings", "gallery"})
+STAFF_SEGMENTS = frozenset({"admins", "auth"})
+WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
 class HubFull(Exception):
@@ -70,6 +74,10 @@ def league_invalidated(area: str) -> RealtimeEvent:
     return _event("league.invalidated", "area", area, {"area": area})
 
 
+def admin_invalidated(area: str) -> RealtimeEvent:
+    return _event("admin.invalidated", "area", area, {"area": area})
+
+
 def login_request_changed(admin_id: int) -> RealtimeEvent:
     return _event("admin.login_request.changed", "admin", str(int(admin_id)), {})
 
@@ -78,17 +86,44 @@ def admin_channel(admin_id: int) -> str:
     return f"admin:{int(admin_id)}"
 
 
+def _segments(path: str) -> list[str]:
+    return [part for part in path.strip("/").lower().split("/") if part]
+
+
 def public_area(method: str, path: str) -> str | None:
-    if method.upper() not in {"POST", "PUT", "PATCH", "DELETE"}:
+    if method.upper() not in WRITE_METHODS:
         return None
-    segment = path.strip("/").split("/", 1)[0].lower()
-    return segment if segment in PUBLIC_AREAS else None
+    segments = _segments(path)
+    if not segments:
+        return None
+    if "gallery" in segments or "gallery-cover" in segments:
+        return "gallery"
+    return segments[0] if segments[0] in PUBLIC_AREAS else None
+
+
+def staff_notices(method: str, path: str, actor_id: int | None) -> list[tuple[str, str]]:
+    """Channels and areas for a successful admin-account write: every admin console, the actor, the target."""
+    if method.upper() not in WRITE_METHODS:
+        return []
+    segments = _segments(path)
+    if not segments or segments[0] not in STAFF_SEGMENTS:
+        return []
+    notices = [(STAFF_CHANNEL, "admins")]
+    targets = []
+    if actor_id is not None:
+        targets.append(int(actor_id))
+    if segments[0] == "admins" and len(segments) > 1 and segments[1].isdigit():
+        targets.append(int(segments[1]))
+    for target in dict.fromkeys(targets):
+        notices.append((admin_channel(target), "me"))
+    return notices
 
 
 class MemoryHub:
     def __init__(self, max_subscribers: int = MAX_SUBSCRIBERS):
         self.max_subscribers = max_subscribers
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
+        self._queues: set[asyncio.Queue] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self.published = 0
         self.dropped = 0
@@ -97,24 +132,28 @@ class MemoryHub:
     def subscriber_count(self, channel: str | None = None) -> int:
         if channel is not None:
             return len(self._subscribers.get(channel, ()))
-        return sum(len(queues) for queues in self._subscribers.values())
+        return len(self._queues)
 
-    async def subscribe(self, channel: str) -> asyncio.Queue:
+    async def subscribe(self, channels: str | tuple[str, ...]) -> asyncio.Queue:
         self._loop = asyncio.get_running_loop()
         if self.subscriber_count() >= self.max_subscribers:
             self.rejected += 1
             raise HubFull()
         queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_SIZE)
-        self._subscribers.setdefault(channel, set()).add(queue)
+        self._queues.add(queue)
+        for channel in _as_channels(channels):
+            self._subscribers.setdefault(channel, set()).add(queue)
         return queue
 
-    def unsubscribe(self, channel: str, queue: asyncio.Queue) -> None:
-        queues = self._subscribers.get(channel)
-        if not queues:
-            return
-        queues.discard(queue)
-        if not queues:
-            self._subscribers.pop(channel, None)
+    def unsubscribe(self, channels: str | tuple[str, ...], queue: asyncio.Queue) -> None:
+        self._queues.discard(queue)
+        for channel in _as_channels(channels):
+            queues = self._subscribers.get(channel)
+            if not queues:
+                continue
+            queues.discard(queue)
+            if not queues:
+                self._subscribers.pop(channel, None)
 
     def publish(self, channel: str, event: RealtimeEvent) -> None:
         loop = self._loop
@@ -140,6 +179,10 @@ class MemoryHub:
                     pass
                 self.dropped += 1
             queue.put_nowait(body)
+
+
+def _as_channels(channels: str | tuple[str, ...]) -> tuple[str, ...]:
+    return (channels,) if isinstance(channels, str) else tuple(channels)
 
 
 hub = MemoryHub()
@@ -205,6 +248,12 @@ def publish_public_change(area: str | None) -> None:
     hub.publish(PUBLIC_CHANNEL, league_invalidated(area))
 
 
+def publish_admin_change(channel: str, area: str) -> None:
+    if not realtime_enabled():
+        return
+    hub.publish(channel, admin_invalidated(area))
+
+
 def publish_login_request_changed(admin_id: int | None) -> None:
     if admin_id is None or not realtime_enabled():
         return
@@ -216,10 +265,28 @@ def format_sse(body: str) -> str:
     return f"id: {event['eventId']}\nevent: {event['eventType']}\ndata: {body}\n\n"
 
 
-class PublicChangeMiddleware:
-    """After a successful public write, tell open browsers to refetch that area.
+def _actor_id(scope) -> int | None:
+    from core.security import decode_access_token
 
-    Sync route handlers commit before the response starts, so this runs after the change is stored.
+    for name, value in scope.get("headers") or ():
+        if name.lower() != b"authorization":
+            continue
+        scheme, _, token = value.decode("latin-1").partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            return None
+        try:
+            return int(decode_access_token(token.strip())["sub"])
+        except Exception:
+            return None
+    return None
+
+
+class PublicChangeMiddleware:
+    """After a successful write, tell open browsers to refetch what changed.
+
+    League writes go to the public channel. Admin-account writes go to the staff channel and to the
+    acting and target admins. Sync route handlers commit before the response starts, so this runs
+    after the change is stored.
     """
 
     def __init__(self, app):
@@ -229,14 +296,21 @@ class PublicChangeMiddleware:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
-        area = public_area(scope.get("method", ""), scope.get("path", ""))
-        if area is None:
+        method, path = scope.get("method", ""), scope.get("path", "")
+        area = public_area(method, path)
+        staff = staff_notices(method, path, None) if area is None else []
+        if area is None and not staff:
             await self.app(scope, receive, send)
             return
+        if staff:
+            staff = staff_notices(method, path, _actor_id(scope))
 
         async def watch(message):
             if message.get("type") == "http.response.start" and 200 <= int(message.get("status", 0)) < 300:
-                publish_public_change(area)
+                if area is not None:
+                    publish_public_change(area)
+                for channel, notice_area in staff:
+                    publish_admin_change(channel, notice_area)
             await send(message)
 
         await self.app(scope, receive, watch)

@@ -17,12 +17,14 @@ import core.realtime as realtime
 import routes.realtime_routes as realtime_routes
 from core.realtime import (
     PUBLIC_CHANNEL,
+    STAFF_CHANNEL,
     HubFull,
     MemoryHub,
     PublicChangeMiddleware,
     Ticket,
     TicketStore,
     admin_channel,
+    admin_invalidated,
     format_sse,
     league_invalidated,
     login_request_changed,
@@ -30,6 +32,7 @@ from core.realtime import (
     public_area,
     publish_public_change,
     realtime_enabled,
+    staff_notices,
 )
 from core.security import create_access_token
 from routes.auth_routes import get_current_admin, get_service
@@ -82,6 +85,43 @@ class RealtimeEventTests(unittest.TestCase):
         self.assertIsNone(public_area("POST", "/auth/login"))
         self.assertIsNone(public_area("PATCH", "/admins/3"))
         self.assertIsNone(public_area("POST", "/assistant/admin/chat"))
+
+    def test_gallery_writes_map_to_the_gallery_area(self):
+        self.assertEqual(public_area("POST", "/gallery"), "gallery")
+        self.assertEqual(public_area("PATCH", "/gallery/12"), "gallery")
+        self.assertEqual(public_area("PUT", "/gallery/order"), "gallery")
+        self.assertEqual(public_area("POST", "/gallery/bulk"), "gallery")
+        self.assertEqual(public_area("PUT", "/seasons/3/gallery-cover"), "gallery")
+        self.assertEqual(public_area("POST", "/seasons/3/teams"), "seasons")
+        self.assertIsNone(public_area("GET", "/admin/gallery"))
+
+    def test_admin_notice_names_only_the_area(self):
+        body = json.loads(admin_invalidated("admins").to_json())
+        self.assertEqual(body["eventType"], "admin.invalidated")
+        self.assertEqual(body["entityId"], "admins")
+        self.assertEqual(body["payload"], {"area": "admins"})
+
+    def test_admin_writes_notify_staff_the_actor_and_the_target(self):
+        self.assertEqual(
+            staff_notices("PATCH", "/admins/9", actor_id=5),
+            [(STAFF_CHANNEL, "admins"), (admin_channel(5), "me"), (admin_channel(9), "me")],
+        )
+        self.assertEqual(
+            staff_notices("PUT", "/admins/9/permissions", actor_id=9),
+            [(STAFF_CHANNEL, "admins"), (admin_channel(9), "me")],
+        )
+        self.assertEqual(
+            staff_notices("POST", "/auth/me/phone/verify", actor_id=5),
+            [(STAFF_CHANNEL, "admins"), (admin_channel(5), "me")],
+        )
+        self.assertEqual(staff_notices("POST", "/auth/reset-password", actor_id=None), [(STAFF_CHANNEL, "admins")])
+        self.assertEqual(staff_notices("POST", "/admins", actor_id=5), [(STAFF_CHANNEL, "admins"), (admin_channel(5), "me")])
+
+    def test_reads_and_other_writes_notify_no_staff(self):
+        self.assertEqual(staff_notices("GET", "/admins", actor_id=5), [])
+        self.assertEqual(staff_notices("POST", "/matches", actor_id=5), [])
+        self.assertEqual(staff_notices("POST", "/realtime/ticket", actor_id=5), [])
+        self.assertEqual(staff_notices("POST", "/assistant/admin/chat", actor_id=5), [])
 
     def test_origin_must_be_on_the_allowed_list(self):
         allowed = ["http://localhost:5179", "https://aroyofficial.github.io"]
@@ -152,6 +192,23 @@ class MemoryHubTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_one_subscriber_can_hold_several_channels(self):
+        async def scenario():
+            live = MemoryHub(max_subscribers=1)
+            queue = await live.subscribe((PUBLIC_CHANNEL, STAFF_CHANNEL, admin_channel(5)))
+            self.assertEqual(live.subscriber_count(), 1)
+            live.publish(PUBLIC_CHANNEL, league_invalidated("matches"))
+            live.publish(STAFF_CHANNEL, admin_invalidated("admins"))
+            live.publish(admin_channel(5), admin_invalidated("me"))
+            live.publish(admin_channel(9), admin_invalidated("me"))
+            await asyncio.sleep(0)
+            self.assertEqual(queue.qsize(), 3)
+            live.unsubscribe((PUBLIC_CHANNEL, STAFF_CHANNEL, admin_channel(5)), queue)
+            self.assertEqual(live.subscriber_count(), 0)
+            self.assertEqual(live.subscriber_count(STAFF_CHANNEL), 0)
+
+        asyncio.run(scenario())
+
     def test_publish_from_a_worker_thread_reaches_the_loop(self):
         async def scenario():
             live = MemoryHub()
@@ -214,6 +271,18 @@ def _route_app():
     def login():
         return {"ok": True}
 
+    @app.patch("/admins/{admin_id}")
+    def update_admin(admin_id: int):
+        return {"ok": admin_id}
+
+    @app.delete("/admins/{admin_id}")
+    def refuse_admin(admin_id: int):
+        raise HTTPException(status_code=403, detail="no")
+
+    @app.post("/gallery")
+    def upload():
+        return {"ok": True}
+
     return app
 
 
@@ -259,8 +328,24 @@ class RealtimeRouteTests(unittest.TestCase):
             self.client.post("/matches")
             self.client.post("/players")
             self.client.post("/auth/login")
+            self.client.post("/gallery")
             self.client.get("/realtime/health")
-        self.assertEqual(calls, ["matches"])
+        self.assertEqual(calls, ["matches", "gallery"])
+
+    def test_only_successful_admin_writes_notify_staff(self):
+        calls = []
+        token = create_access_token(5, "a.b", 2)
+        with patch.object(realtime, "publish_admin_change", lambda channel, area: calls.append((channel, area))):
+            self.client.patch("/admins/9", headers={"Authorization": f"Bearer {token}"})
+            self.client.delete("/admins/9", headers={"Authorization": f"Bearer {token}"})
+            self.client.post("/matches", headers={"Authorization": f"Bearer {token}"})
+            self.client.post("/auth/login")
+            self.client.patch("/admins/9", headers={"Authorization": "Bearer forged"})
+        self.assertEqual(calls, [
+            (STAFF_CHANNEL, "admins"), (admin_channel(5), "me"), (admin_channel(9), "me"),
+            (STAFF_CHANNEL, "admins"),
+            (STAFF_CHANNEL, "admins"), (admin_channel(9), "me"),
+        ])
 
 
 def _free_port():
@@ -294,7 +379,7 @@ class LiveStreamTests(unittest.TestCase):
     def _url(self, path):
         return f"http://127.0.0.1:{self.port}{path}"
 
-    def _read_event(self, stream, deadline, name):
+    def _read_event(self, stream, deadline, name, skipped=None):
         lines = []
         while time.time() < deadline:
             line = stream.readline().decode("utf-8")
@@ -303,6 +388,8 @@ class LiveStreamTests(unittest.TestCase):
             if line == "\n":
                 if f"event: {name}" in lines:
                     return lines
+                if skipped is not None:
+                    skipped.extend(item for item in lines if item.startswith("event: "))
                 lines = []
                 continue
             lines.append(line.rstrip("\n"))
@@ -332,6 +419,34 @@ class LiveStreamTests(unittest.TestCase):
             lines = self._read_event(stream, time.time() + 5, "admin.login_request.changed")
         data = json.loads(next(item for item in lines if item.startswith("data: "))[6:])
         self.assertEqual(data["entityId"], "5")
+
+    def test_an_admin_stream_carries_public_staff_and_its_own_notices(self):
+        ticket = realtime.tickets.issue(Ticket(5, "a.b", 2, int(time.time()) + 600))
+        with urllib.request.urlopen(self._url(f"/realtime/admin?ticket={ticket}"), timeout=10) as stream:
+            self._wait_for_subscribers(1)
+            realtime.publish_admin_change(admin_channel(9), "me")
+            realtime.publish_public_change("teams")
+            lines = self._read_event(stream, time.time() + 5, "league.invalidated")
+            self.assertIn('"area":"teams"', next(item for item in lines if item.startswith("data: ")))
+            realtime.publish_admin_change(STAFF_CHANNEL, "admins")
+            lines = self._read_event(stream, time.time() + 5, "admin.invalidated")
+            self.assertIn('"area":"admins"', next(item for item in lines if item.startswith("data: ")))
+            realtime.publish_admin_change(admin_channel(5), "me")
+            lines = self._read_event(stream, time.time() + 5, "admin.invalidated")
+        data = json.loads(next(item for item in lines if item.startswith("data: "))[6:])
+        self.assertEqual(data["payload"], {"area": "me"})
+
+    def test_the_public_stream_never_carries_staff_notices(self):
+        with urllib.request.urlopen(self._url("/realtime/public"), timeout=10) as stream:
+            self._wait_for_subscribers(1)
+            realtime.publish_admin_change(STAFF_CHANNEL, "admins")
+            realtime.publish_admin_change(admin_channel(5), "me")
+            realtime.publish_public_change("seasons")
+            earlier = []
+            lines = self._read_event(stream, time.time() + 5, "league.invalidated", earlier)
+        self.assertNotIn("event: admin.invalidated", earlier)
+        self.assertNotIn("event: admin.invalidated", lines)
+        self.assertIn('"area":"seasons"', next(item for item in lines if item.startswith("data: ")))
 
     def test_a_revoked_admin_stream_is_closed(self):
         ticket = realtime.tickets.issue(Ticket(5, "a.b", 2, int(time.time()) + 600))
