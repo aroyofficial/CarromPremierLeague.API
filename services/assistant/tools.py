@@ -383,7 +383,7 @@ ADMIN_WRITES: list[Tool] = [
     _write(
         "assign_player_to_team",
         "Assign player",
-        "Put a player in a team's roster for a season.",
+        "Put a player in a team's roster for a season. A team holds two players.",
         "POST",
         "/rosters/assign",
         ("rosters.manage",),

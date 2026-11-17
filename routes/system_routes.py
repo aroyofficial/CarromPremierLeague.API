@@ -132,7 +132,7 @@ DESCRIPTIONS = {
     ("GET", "/stats/head-to-head"): "Head-to-head record for two teams",
     ("GET", "/stats/season/{season_id}/top-coin-potters"): "Top coin potters in a season",
     ("GET", "/stats/season/{season_id}/players"): "Player statistics for a season",
-    ("POST", "/rosters/assign"): "Assign a player to a team for a season",
+    ("POST", "/rosters/assign"): "Assign a player to a team for a season. A team holds two players.",
     ("DELETE", "/rosters/remove"): "Remove a player from a season roster",
     ("GET", "/rosters/team/{team_id}"): "Get a team roster for a season",
     ("GET", "/rosters/player/{player_id}"): "Get a player's season history",
