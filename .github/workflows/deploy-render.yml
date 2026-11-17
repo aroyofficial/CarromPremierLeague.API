@@ -91,6 +91,7 @@ jobs:
           }
           set_env_var "CPL_AUTH_JWT_SECRET" "${CPL_AUTH_JWT_SECRET}"
           set_env_var "CPL_AUTH_TOKEN_EXPIRE_MINUTES" "60"
+          set_env_var "CPL_REALTIME_ENABLED" "true"
           set_env_var "CPL_MEDIA_FOLDER" "${CPL_MEDIA_FOLDER}"
           if [ -n "${CLOUDINARY_URL}" ]; then
             set_env_var "CPL_CLOUDINARY_URL" "${CLOUDINARY_URL}"
