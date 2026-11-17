@@ -10,6 +10,7 @@ logger = logging.getLogger("cpl.mail")
 
 from core.admin_usernames import username_candidates
 from core.phone_numbers import PhoneNumberError, PhoneTaken, canonicalize
+from core.realtime import publish_login_request_changed
 from services.phone_otp import PhoneOtpService
 from core.permissions import (
     ALL_CODES,
@@ -175,6 +176,7 @@ class AuthService:
         if device_id:
             waiting = self.sessions.begin(record["Id"], device_id, device_label, now)
             if waiting is not None:
+                publish_login_request_changed(record["Id"])
                 return TokenResponse(
                     access_token="",
                     expires_in=0,
@@ -350,9 +352,11 @@ class AuthService:
         expires = now + timedelta(minutes=settings.AUTH_TOKEN_EXPIRE_MINUTES)
         self.sessions.activate(admin.id, challenge.device_id, challenge.device_label, expires)
         self.sessions.resolve(admin.id, request_id, "approved", now, token)
+        publish_login_request_changed(admin.id)
 
     def deny_login(self, admin: AdminResponse, request_id: str) -> None:
         self.sessions.resolve(admin.id, request_id, "denied", _utcnow())
+        publish_login_request_changed(admin.id)
 
     def claim_login(self, request_id: str) -> TokenResponse:
         challenge = self.sessions.claim(request_id, _utcnow())

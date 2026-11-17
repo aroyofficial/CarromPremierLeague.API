@@ -29,4 +29,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# One process, no --workers. Realtime subscribers live in this process, which is also the Render free plan's limit.
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]

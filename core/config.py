@@ -31,6 +31,8 @@ class Settings:
         self.AUTH_TOKEN_EXPIRE_MINUTES: int = self._get_int_env("CPL_AUTH_TOKEN_EXPIRE_MINUTES")
         # off (default) | dev (APP_ENV=dev only). No production SMS provider is configured.
         self.PHONE_OTP_PROVIDER: str = (self._get_optional_env("CPL_PHONE_OTP_PROVIDER") or "off").lower()
+        # Public season invalidation stream. Off unless explicitly enabled. One process only.
+        self.REALTIME_ENABLED: bool = (self._get_optional_env("CPL_REALTIME_ENABLED") or "").lower() in {"1", "true", "yes"}
 
         self.DB_HOST: str = self._get_env("CPL_DB_HOST")
         self.DB_PORT: int = self._get_int_env("CPL_DB_PORT")
