@@ -14,6 +14,14 @@ MAX_PER_HOUR = 5
 # A verified email code is exchanged for a ticket, which then allows exactly one password change or reset.
 TICKET_PURPOSE = "password_ticket"
 
+# Outcomes of checking a code. Only CODE_OK lets the action continue.
+CODE_OK = "ok"
+CODE_INCORRECT = "incorrect"
+CODE_EXPIRED = "expired"
+CODE_USED = "used"
+CODE_LIMITED = "limited"
+CODE_MISSING = "missing"
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -70,26 +78,28 @@ class MemoryCodeStore:
             if row.admin_id == admin_id and row.purpose == purpose and row.expires_at - timedelta(minutes=CODE_MINUTES) >= since
         )
 
-    def verify(self, admin_id: int, purpose: str, destination: str, code: str) -> bool:
-        row = self._open(admin_id, purpose)
+    def check(self, admin_id: int, purpose: str, destination: str, code: str) -> str:
+        row = self._latest(admin_id, purpose)
         if row is None or row.destination != (destination or "").lower():
-            return False
+            return CODE_MISSING
+        if row.consumed:
+            return CODE_USED
+        if row.expires_at <= _utcnow():
+            return CODE_EXPIRED
         if row.attempts >= MAX_ATTEMPTS:
-            row.consumed = True
-            return False
+            return CODE_LIMITED
         if not hmac.compare_digest(row.code_hash, _hash(code or "", row.code_salt)):
             row.attempts += 1
-            return False
+            return CODE_LIMITED if row.attempts >= MAX_ATTEMPTS else CODE_INCORRECT
         row.consumed = True
-        return True
+        return CODE_OK
 
-    def _open(self, admin_id: int, purpose: str) -> StoredCode | None:
-        now = _utcnow()
-        open_rows = [
-            row for row in self.rows
-            if row.admin_id == admin_id and row.purpose == purpose and not row.consumed and row.expires_at > now
-        ]
-        return open_rows[-1] if open_rows else None
+    def verify(self, admin_id: int, purpose: str, destination: str, code: str) -> bool:
+        return self.check(admin_id, purpose, destination, code) == CODE_OK
+
+    def _latest(self, admin_id: int, purpose: str) -> StoredCode | None:
+        matches = [row for row in self.rows if row.admin_id == admin_id and row.purpose == purpose]
+        return matches[-1] if matches else None
 
 
 class SqlCodeStore:
@@ -122,37 +132,52 @@ class SqlCodeStore:
         )
         return int(cursor.fetchone()["Count"])
 
-    def verify(self, admin_id: int, purpose: str, destination: str, code: str) -> bool:
+    def check(self, admin_id: int, purpose: str, destination: str, code: str) -> str:
         cursor = self.db.cursor()
         cursor.execute(
             """
-            SELECT TOP (1) Id, Destination, CodeHash, CodeSalt, Attempts
+            SELECT TOP (1) Id, Destination, CodeHash, CodeSalt, Attempts, ConsumedAt,
+                   CASE WHEN ExpiresAt <= SYSUTCDATETIME() THEN 1 ELSE 0 END AS Expired
             FROM tblAdminCodes
-            WHERE AdminId = %s AND Purpose = %s AND ConsumedAt IS NULL AND ExpiresAt > SYSUTCDATETIME()
+            WHERE AdminId = %s AND Purpose = %s
             ORDER BY Id DESC
             """,
             (admin_id, purpose),
         )
         row = cursor.fetchone()
         if not row or (row["Destination"] or "").lower() != (destination or "").lower():
-            return False
-        if int(row["Attempts"]) >= MAX_ATTEMPTS:
-            self._consume(row["Id"])
-            return False
+            return CODE_MISSING
+        if row["ConsumedAt"] is not None:
+            return CODE_USED
+        if int(row["Expired"]) == 1:
+            return CODE_EXPIRED
+        attempts = int(row["Attempts"])
+        if attempts >= MAX_ATTEMPTS:
+            return CODE_LIMITED
+        # Both updates are conditional, so parallel requests cannot use one code twice or push the
+        # attempts past the limit.
         if not hmac.compare_digest(row["CodeHash"], _hash(code or "", row["CodeSalt"])):
             cursor.execute(
-                "UPDATE tblAdminCodes SET Attempts = Attempts + 1 WHERE Id = %s",
-                (row["Id"],),
+                "UPDATE tblAdminCodes SET Attempts = Attempts + 1 WHERE Id = %s AND ConsumedAt IS NULL AND Attempts < %s",
+                (row["Id"], MAX_ATTEMPTS),
             )
+            counted = cursor.rowcount == 1
             self.db.commit()
-            return False
-        self._consume(row["Id"])
-        return True
+            return CODE_LIMITED if not counted or attempts + 1 >= MAX_ATTEMPTS else CODE_INCORRECT
+        return CODE_OK if self._consume(row["Id"]) else CODE_USED
 
-    def _consume(self, code_id: int) -> None:
+    def verify(self, admin_id: int, purpose: str, destination: str, code: str) -> bool:
+        return self.check(admin_id, purpose, destination, code) == CODE_OK
+
+    def _consume(self, code_id: int) -> bool:
         cursor = self.db.cursor()
         cursor.execute(
-            "UPDATE tblAdminCodes SET ConsumedAt = SYSUTCDATETIME() WHERE Id = %s",
-            (code_id,),
+            """
+            UPDATE tblAdminCodes SET ConsumedAt = SYSUTCDATETIME()
+            WHERE Id = %s AND ConsumedAt IS NULL AND Attempts < %s AND ExpiresAt > SYSUTCDATETIME()
+            """,
+            (code_id, MAX_ATTEMPTS),
         )
+        consumed = cursor.rowcount == 1
         self.db.commit()
+        return consumed

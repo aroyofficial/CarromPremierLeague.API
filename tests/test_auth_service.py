@@ -68,6 +68,7 @@ class FakeAdminRepository:
             avatar_url=item.get("AvatarUrl"),
             must_change_password=bool(item.get("MustChangePassword")),
             password_changed_at=item.get("PasswordChangedAt"),
+            phone_verified=item.get("PhoneVerifiedAt") is not None,
         )
 
     def get_all(self):
@@ -77,6 +78,12 @@ class FakeAdminRepository:
         for item in self.records.values():
             if not item["Void"] and item.get("Email") == email:
                 return item["Id"]
+        return None
+
+    def find_phone(self, e164):
+        for item in self.records.values():
+            if not item["Void"] and item.get("PhoneE164") == e164:
+                return ("admin", item["Id"])
         return None
 
     def create(self, username, password_hash, password_salt, password_iterations, profile=None, is_active=True, must_change_password=False):
@@ -99,6 +106,7 @@ class FakeAdminRepository:
             "Gender": profile.get("gender"),
             "PhoneCode": profile.get("phone_code"),
             "PhoneNumber": profile.get("phone_number"),
+            "PhoneE164": profile.get("phone_e164"),
             "Email": profile.get("email"),
             "AvatarUrl": None,
         }
@@ -122,6 +130,8 @@ class FakeAdminRepository:
                 "gender": "Gender",
                 "phone_code": "PhoneCode",
                 "phone_number": "PhoneNumber",
+                "phone_e164": "PhoneE164",
+                "phone_verified_at": "PhoneVerifiedAt",
                 "email": "Email",
                 "password_changed_at": "PasswordChangedAt",
             }[key]] = value
@@ -301,12 +311,12 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(renamed.email, "owner@example.com")
         with self.assertRaises(HTTPException):
             self.service.update_admin(self.primary.id, AdminUpdateRequest(email=None), self.primary)
-        with self.assertRaises(HTTPException):
-            self.service.update_admin(
-                self.primary.id,
-                AdminUpdateRequest(phone_code=None, phone_number=None),
-                self.primary,
-            )
+        cleared = self.service.update_admin(
+            self.primary.id,
+            AdminUpdateRequest(phone_code=None, phone_number=None),
+            self.primary,
+        )
+        self.assertIsNone(cleared.phone_number)
 
     def test_profile_rejects_a_partial_phone_and_a_future_birthday(self):
         with self.assertRaises(ValidationError):
@@ -340,7 +350,7 @@ class AuthServiceTests(unittest.TestCase):
         current = self.service.current_admin(token.access_token)
         with self.assertRaises(HTTPException) as no_code:
             self.service.update_admin(created.id, AdminUpdateRequest(password="replacement-password"), current)
-        self.assertIn("code sent to your email", no_code.exception.detail)
+        self.assertEqual(no_code.exception.detail, "Send a code first, then enter it here.")
         self.service.request_password_code(current)
         verify_mail = self.service.mailer.sent[-1]
         self.assertEqual(verify_mail.to, "new-admin@example.com")
@@ -381,24 +391,37 @@ class AuthServiceTests(unittest.TestCase):
         )
         self.assertEqual(updated.email, "next@example.com")
 
-    def test_create_needs_an_email_and_a_ten_digit_contact_number(self):
+    def test_create_needs_an_email_and_accepts_a_missing_phone(self):
         with self.assertRaises(HTTPException) as no_email:
             self.service.create_admin(
                 AdminCreateRequest(username="no-mail", phone_code="+91", phone_number="9000000011"),
                 self.primary,
             )
         self.assertEqual(no_email.exception.detail, "Email is required.")
-        with self.assertRaises(HTTPException) as no_phone:
-            self.service.create_admin(AdminCreateRequest(username="no-phone", email="p@example.com"), self.primary)
-        self.assertEqual(no_phone.exception.detail, "Contact number is required.")
+        created = self.service.create_admin(
+            AdminCreateRequest(username="no-phone", email="nophone@example.com"),
+            self.primary,
+        )
+        self.assertIsNone(created.phone_number)
         for number in ("900000001", "90000000111", "90000-0001", "abcdefghij"):
             with self.assertRaises(ValidationError) as invalid:
                 AdminCreateRequest(username="bad-phone", email="p@example.com", phone_code="+91", phone_number=number)
-            self.assertIn("exactly 10 digits", str(invalid.exception))
+            self.assertIn("valid", str(invalid.exception).lower())
         self.assertEqual(
             AdminCreateRequest(username="ok-phone", email="p@example.com", phone_code="+91", phone_number=" 9000000011 ").phone_number,
             "9000000011",
         )
+        self.assertEqual(
+            AdminCreateRequest(username="trunk", email="t@example.com", phone_code="+91", phone_number="09000000011").phone_number,
+            "9000000011",
+        )
+
+    def test_the_same_phone_cannot_be_saved_twice(self):
+        self._create("first-phone", "first-phone@example.com", "9000000041")
+        with self.assertRaises(HTTPException) as raised:
+            self._create("second-phone", "second-phone@example.com", "09000 000041")
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail, "That phone number is already used.")
 
     def test_no_admin_can_edit_another_admins_profile_or_password(self):
         self._give_primary_email()

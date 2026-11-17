@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -6,6 +8,7 @@ from pydantic import ValidationError
 
 from core.response import ApiResponse
 
+logger = logging.getLogger("cpl.errors")
 
 def _plain_errors(errors) -> list[dict]:
     """Validator errors carry the raised exception in ctx, which JSON cannot encode."""
@@ -70,11 +73,13 @@ def add_exception_handlers(app):
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
+        # Database and driver messages name tables, indexes and values, so they stay in the log.
+        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=500,
             content=ApiResponse(
                 success=False,
-                message="Internal server error",
-                data=str(exc)
+                message="Something went wrong on our side. Try again in a moment.",
+                data=None
             ).model_dump()
         )

@@ -5,6 +5,7 @@ from unittest.mock import patch
 from tests import test_auth_service as _env  # noqa: F401  (sets the environment before app imports)
 
 from fastapi import HTTPException
+from PIL import Image
 
 from core.storage import StoredImage
 from schemas.player_schema import PlayerCreateRequest, PlayerUpdateRequest
@@ -95,10 +96,41 @@ class FakeTeamRepository:
         return self.rows.get(team_id)
 
 
+def _encoded(fmt, size=(4, 4)):
+    buffer = io.BytesIO()
+    Image.new("RGB", size, (200, 10, 10)).save(buffer, format=fmt)
+    return buffer.getvalue()
+
+
+REAL_JPEG = _encoded("JPEG")
+REAL_PNG = _encoded("PNG")
+REAL_WEBP = _encoded("WEBP")
+
+
 class ReadImageTests(unittest.TestCase):
     def test_accepts_jpeg_png_and_webp(self):
-        for data in (JPEG, PNG, WEBP):
+        for data in (REAL_JPEG, REAL_PNG, REAL_WEBP):
             self.assertEqual(read_image(io.BytesIO(data)), data)
+
+    def test_rejects_an_image_header_with_no_readable_image_behind_it(self):
+        # Magic bytes alone are not enough: the body has to decode.
+        for data in (JPEG, PNG, WEBP, REAL_JPEG[: len(REAL_JPEG) // 2], REAL_PNG[: len(REAL_PNG) - 12]):
+            with self.subTest(length=len(data)), self.assertRaises(HTTPException) as raised:
+                read_image(io.BytesIO(data))
+            self.assertEqual(raised.exception.status_code, 400)
+            self.assertIn("not a readable", raised.exception.detail)
+
+    def test_rejects_a_polyglot_that_starts_like_a_jpeg_and_carries_markup(self):
+        data = b"\xff\xd8\xff\xe0<script>alert(1)</script>"
+        with self.assertRaises(HTTPException) as raised:
+            read_image(io.BytesIO(data))
+        self.assertIn("not a readable", raised.exception.detail)
+
+    def test_rejects_canvases_larger_than_the_pixel_budget(self):
+        with patch("services.media_service.MAX_IMAGE_PIXELS", 10):
+            with self.assertRaises(HTTPException) as raised:
+                read_image(io.BytesIO(REAL_PNG))
+        self.assertIn("too large in size", raised.exception.detail)
 
     def test_rejects_non_images_even_with_an_image_name(self):
         for data in (b"<svg xmlns='http://www.w3.org/2000/svg'/>", b"GIF89a" + b"\x00" * 20, b"%PDF-1.7"):
@@ -112,9 +144,10 @@ class ReadImageTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
 
     def test_size_cap(self):
-        self.assertEqual(len(read_image(io.BytesIO(PNG + b"\x00" * (MAX_IMAGE_BYTES - len(PNG))))), MAX_IMAGE_BYTES)
+        padded = REAL_PNG + b"\x00" * (MAX_IMAGE_BYTES - len(REAL_PNG))
+        self.assertEqual(len(read_image(io.BytesIO(padded))), MAX_IMAGE_BYTES)
         with self.assertRaises(HTTPException) as raised:
-            read_image(io.BytesIO(PNG + b"\x00" * MAX_IMAGE_BYTES))
+            read_image(io.BytesIO(REAL_PNG + b"\x00" * MAX_IMAGE_BYTES))
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("5 MB", raised.exception.detail)
 
@@ -366,7 +399,7 @@ class FakeBody(io.BytesIO):
 
 
 class FakeOpener:
-    def __init__(self, data=PNG, headers=None, error=None):
+    def __init__(self, data=REAL_PNG, headers=None, error=None):
         self.data = data
         self.headers = {"Content-Type": "image/png", **(headers or {})}
         self.error = error
@@ -399,7 +432,7 @@ class PublicLinkTests(unittest.TestCase):
         opener = FakeOpener()
         self.assertEqual(
             fetch_public_image("https://cdn.example/a.png", opener=opener, resolve=_public_dns),
-            PNG,
+            REAL_PNG,
         )
         self.assertEqual(opener.opened, ["https://cdn.example/a.png"])
         self.assertEqual(opener.timeout, 20)
@@ -467,8 +500,8 @@ class PictureLinkTests(unittest.TestCase):
 
 class SubmittedPictureTests(unittest.TestCase):
     def test_file_or_link_but_not_both_or_neither(self):
-        upload = type("Upload", (), {"filename": "a.png", "file": io.BytesIO(PNG)})()
-        self.assertEqual(read_submitted_picture(upload, None), PNG)
+        upload = type("Upload", (), {"filename": "a.png", "file": io.BytesIO(REAL_PNG)})()
+        self.assertEqual(read_submitted_picture(upload, None), REAL_PNG)
         seen = {}
 
         def fetch(url):

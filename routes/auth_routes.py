@@ -42,6 +42,8 @@ from schemas.auth_schema import (
     PasswordCodeVerifyRequest,
     PasswordTicket,
     PendingLogin,
+    PhoneCodeRequest,
+    PhoneVerifyRequest,
     TotpConfirmRequest,
     TotpSetupResponse,
     ResetCodeRequest,
@@ -59,6 +61,7 @@ from services.admin_mfa import SqlMfaStore
 from services.auth_service import AuthService
 from services.admin_sessions import SqlSessionStore
 from services.mailer import get_mailer
+from services.phone_otp import PhoneOtpService, SqlPhoneOtpStore, sender_from_settings
 from services.media_service import MediaService
 
 
@@ -74,6 +77,7 @@ def get_service(db=Depends(get_db)) -> AuthService:
         codes=SqlCodeStore(db),
         sessions=SqlSessionStore(db),
         mfa=SqlMfaStore(db),
+        phone_otp=PhoneOtpService(SqlPhoneOtpStore(db), sender_from_settings()),
     )
 
 
@@ -343,6 +347,26 @@ def reset_password(request: ResetPasswordRequest, service: AuthService = Depends
 @router.get("/auth/me", response_model=ApiResponse[AdminResponse], summary="Current admin")
 def current_admin(admin: AdminResponse = Depends(get_current_admin)):
     return ApiResponse(success=True, message="Current admin fetched successfully.", data=admin)
+
+
+@router.post("/auth/me/phone/otp", response_model=ApiResponse[bool], summary="Send a phone verification code")
+def request_phone_code(
+    body: PhoneCodeRequest,
+    admin: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+):
+    service.request_phone_code(admin.id, body.phone_code, body.phone_number, admin)
+    return ApiResponse(success=True, message="A code was sent to that phone number.", data=True)
+
+
+@router.post("/auth/me/phone/verify", response_model=ApiResponse[AdminResponse], summary="Confirm a phone number")
+def verify_phone_code(
+    body: PhoneVerifyRequest,
+    admin: AdminResponse = Depends(get_current_admin),
+    service: AuthService = Depends(get_service),
+):
+    updated = service.confirm_phone_code(admin.id, body.phone_code, body.phone_number, body.code, admin)
+    return ApiResponse(success=True, message="Phone number verified.", data=updated)
 
 
 @router.get("/permissions", response_model=ApiResponse[list[PermissionResponse]], summary="Permission catalog")

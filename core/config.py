@@ -29,6 +29,8 @@ class Settings:
         self.APP_ALLOWED_HOSTS: list[str] = self._get_env("CPL_APP_ALLOWED_HOSTS").split(",")
         self.AUTH_JWT_SECRET: str = self._get_env("CPL_AUTH_JWT_SECRET")
         self.AUTH_TOKEN_EXPIRE_MINUTES: int = self._get_int_env("CPL_AUTH_TOKEN_EXPIRE_MINUTES")
+        # off (default) | dev (APP_ENV=dev only). No production SMS provider is configured.
+        self.PHONE_OTP_PROVIDER: str = (self._get_optional_env("CPL_PHONE_OTP_PROVIDER") or "off").lower()
 
         self.DB_HOST: str = self._get_env("CPL_DB_HOST")
         self.DB_PORT: int = self._get_int_env("CPL_DB_PORT")

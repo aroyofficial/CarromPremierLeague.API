@@ -1,6 +1,7 @@
-from typing import List
+from typing import List, Optional
 from datetime import date
 from fastapi import HTTPException
+from core.phone_numbers import PhoneNumberError, PhoneTaken, canonicalize
 from repositories.player_repository import PlayerRepository
 from services.country_service import CountryService
 from schemas.player_schema import (
@@ -49,6 +50,9 @@ class PlayerService:
         if request.nationality_id is not None:
             self.country_service.validate_country_exists(request.nationality_id)
 
+        phone = self._phone(request.phone_code, request.phone_number)
+        self._require_free_phone(phone["phone_e164"], None)
+
         normalized_request = PlayerCreateRequest(
             first_name=first_name,
             last_name=last_name,
@@ -56,7 +60,32 @@ class PlayerService:
             nationality_id=request.nationality_id
         )
 
-        return self.repository.create(normalized_request)
+        try:
+            return self.repository.create(normalized_request, phone)
+        except PhoneTaken:
+            raise HTTPException(status_code=409, detail="That phone number is already used.") from None
+
+    @staticmethod
+    def _phone(phone_code: Optional[str], phone_number: Optional[str]) -> dict:
+        """Canonical storage values. All three are None when the player has no phone."""
+        code = (phone_code or "").strip()
+        number = (phone_number or "").strip()
+        if not code and not number:
+            return {"phone_code": None, "phone_number": None, "phone_e164": None}
+        if not code or not number:
+            raise HTTPException(status_code=400, detail="Contact number needs both a country code and a number.")
+        try:
+            canonical_code, national, e164 = canonicalize(code, number)
+        except PhoneNumberError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return {"phone_code": canonical_code, "phone_number": national, "phone_e164": e164}
+
+    def _require_free_phone(self, e164: Optional[str], except_player_id: Optional[int]) -> None:
+        if not e164:
+            return
+        owner = self.repository.find_phone(e164)
+        if owner and not (owner[0] == "player" and owner[1] == except_player_id):
+            raise HTTPException(status_code=409, detail="That phone number is already used.")
 
     def update(self, player_id: int, request: PlayerUpdateRequest) -> PlayerResponse:
         existing = self.repository.get_by_id(player_id)
@@ -65,7 +94,15 @@ class PlayerService:
 
         update_data = request.model_dump(exclude_unset=True)
 
-        if not update_data:
+        phone = None
+        if "phone_code" in update_data or "phone_number" in update_data:
+            stored_code, stored_number = self.repository.get_phone(player_id)
+            phone_code = update_data.pop("phone_code", stored_code)
+            phone_number = update_data.pop("phone_number", stored_number)
+            phone = self._phone(phone_code, phone_number)
+            self._require_free_phone(phone["phone_e164"], player_id)
+
+        if not update_data and phone is None:
             return existing
 
         if "first_name" in update_data:
@@ -90,7 +127,10 @@ class PlayerService:
 
         normalized_request = PlayerUpdateRequest(**update_data)
 
-        return self.repository.update(player_id, normalized_request)
+        try:
+            return self.repository.update(player_id, normalized_request, phone)
+        except PhoneTaken:
+            raise HTTPException(status_code=409, detail="That phone number is already used.") from None
 
     def delete(self, player_id: int) -> bool:
         existing = self.repository.get_by_id(player_id)

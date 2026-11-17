@@ -43,9 +43,45 @@ def read_image(stream: BinaryIO) -> bytes:
     data = b"".join(chunks)
     if not data:
         raise HTTPException(status_code=400, detail="Choose an image to upload.")
-    if image_format(data) is None:
+    kind = image_format(data)
+    if kind is None:
         raise HTTPException(status_code=400, detail="Image must be a JPEG, PNG or WebP file.")
+    problem = decoded_image_problem(data, kind)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
     return data
+
+
+_PIL_FORMATS = {"jpeg": "JPEG", "png": "PNG", "webp": "WEBP"}
+MAX_IMAGE_PIXELS = 25_000_000  # about 100 MB decoded at 4 bytes per pixel
+
+
+def decoded_image_problem(data: bytes, kind: str) -> Optional[str]:
+    """Return a user-facing reason when the bytes are not a readable image of the claimed kind, else None.
+
+    The magic bytes only prove the file starts like an image. Decoding it proves the body is one too,
+    which stops truncated files, files that only start like an image, and oversized canvases before
+    they are stored. The original bytes are stored, so data appended after a valid image and EXIF
+    metadata are not removed here.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    not_readable = "The file is not a readable JPEG, PNG or WebP image."
+    try:
+        with Image.open(BytesIO(data)) as probe:
+            if probe.format != _PIL_FORMATS[kind]:
+                return not_readable
+            width, height = probe.size
+            if width < 1 or height < 1 or width * height > MAX_IMAGE_PIXELS:
+                return "The image is too large in size. Use a smaller picture."
+            probe.verify()
+        with Image.open(BytesIO(data)) as image:
+            image.load()
+    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
+        return not_readable
+    return None
 
 
 def _resolve_host(host: str) -> list[str]:
@@ -127,6 +163,8 @@ def _as_public_image(stream: BinaryIO, headers) -> bytes:
         detail = str(error.detail)
         if "5 MB" in detail:
             rewritten = "That image is larger than 5 MB."
+        elif "too large in size" in detail:
+            rewritten = "That image is too large in size. Use a smaller picture."
         elif "Choose an image" in detail:
             rewritten = "That link did not return an image."
         else:

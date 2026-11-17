@@ -141,6 +141,7 @@ class AdminPermissionRuleTests(unittest.TestCase):
         )
 
     def _make(self, username, codes=()):
+        self._phones = getattr(self, "_phones", 9000000100) + 1
         created = self.service.create_admin(
             AdminCreateRequest(
                 username=username,
@@ -148,7 +149,7 @@ class AdminPermissionRuleTests(unittest.TestCase):
                 permissions=list(codes),
                 email=f"{username}@example.com",
                 phone_code="+91",
-                phone_number="9000000001",
+                phone_number=str(self._phones),
             ),
             self.owner,
         )
@@ -267,6 +268,120 @@ class AdminPermissionRuleTests(unittest.TestCase):
         listed = {admin.username: admin.permissions for admin in self.service.list_admins()}
         self.assertEqual(listed["scorer"], ["matches.update"])
         self.assertEqual(set(listed["owner"]), ALL_CODES)
+
+
+class DelegationGuardTests(unittest.TestCase):
+    """Delegation can only pass on permissions the caller holds right now, whatever the payload says."""
+
+    def setUp(self):
+        self.service = _service()
+        self.owner = self.service.bootstrap_admin(AdminCreateRequest(username="owner", password="correct-horse-battery"))
+        self._phones = 9200000000
+
+    def _make(self, username, codes=()):
+        self._phones += 1
+        return self.service.create_admin(
+            AdminCreateRequest(
+                username=username,
+                password="correct-horse-battery",
+                permissions=list(codes),
+                email=f"{username}@example.com",
+                phone_code="+91",
+                phone_number=str(self._phones),
+            ),
+            self.owner,
+        )
+
+    def _admin_count(self):
+        return len(self.service.list_admins())
+
+    def test_a_revoked_permission_cannot_be_passed_on_with_a_fresh_actor(self):
+        manager = self._make("manager", [MANAGE_PERMISSIONS, "teams.create"])
+        self.service.set_permissions(manager.id, AdminPermissionsUpdate(permissions=[MANAGE_PERMISSIONS]), self.owner)
+        # Every request loads the actor from the database, so the revoked permission is gone.
+        fresh = self.service.get_admin(manager.id)
+        self.assertNotIn("teams.create", fresh.permissions)
+        before = self._admin_count()
+        with self.assertRaises(HTTPException) as raised:
+            self.service.create_admin(
+                AdminCreateRequest(username="late", password="correct-horse-battery", permissions=["teams.create"]),
+                fresh,
+            )
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(self._admin_count(), before)
+
+    def test_a_revoked_permission_cannot_be_granted_on_update_either(self):
+        manager = self._make("manager", [MANAGE_PERMISSIONS, "teams.create"])
+        target = self._make("target")
+        self.service.set_permissions(manager.id, AdminPermissionsUpdate(permissions=[MANAGE_PERMISSIONS]), self.owner)
+        fresh = self.service.get_admin(manager.id)
+        with self.assertRaises(HTTPException) as raised:
+            self.service.set_permissions(target.id, AdminPermissionsUpdate(permissions=["teams.create"]), fresh)
+        self.assertEqual(raised.exception.status_code, 403)
+
+    def test_a_manager_cannot_grant_itself_a_permission_it_lacks(self):
+        manager = self._make("manager", [MANAGE_PERMISSIONS])
+        with self.assertRaises(HTTPException) as raised:
+            self.service.set_permissions(
+                manager.id,
+                AdminPermissionsUpdate(permissions=[MANAGE_PERMISSIONS, "seasons.delete"]),
+                manager,
+            )
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertNotIn("seasons.delete", self.service.get_admin(manager.id).permissions)
+
+    def test_one_unheld_code_rejects_the_whole_grant(self):
+        manager = self._make("manager", [MANAGE_PERMISSIONS, "teams.create"])
+        before = self._admin_count()
+        with self.assertRaises(HTTPException) as raised:
+            self.service.create_admin(
+                AdminCreateRequest(
+                    username="partial",
+                    password="correct-horse-battery",
+                    permissions=["teams.create", "seasons.delete"],
+                ),
+                manager,
+            )
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(self._admin_count(), before)
+
+    def test_the_refusal_does_not_reveal_what_the_caller_holds(self):
+        manager = self._make("manager", [MANAGE_PERMISSIONS, "teams.create"])
+        with self.assertRaises(HTTPException) as raised:
+            self.service.create_admin(
+                AdminCreateRequest(username="nosy", password="correct-horse-battery", permissions=["seasons.delete"]),
+                manager,
+            )
+        detail = str(raised.exception.detail)
+        self.assertEqual(detail, "You can only grant permissions you already hold.")
+        self.assertNotIn("teams.create", detail)
+        self.assertNotIn("seasons.delete", detail)
+
+    def test_tampered_codes_are_rejected_as_unknown(self):
+        manager = self._make("manager", [MANAGE_PERMISSIONS, "teams.create"])
+        for code in ("TEAMS.CREATE", " teams.create", "teams.create ", "teams.create;drop", "", "*"):
+            with self.subTest(code=code):
+                with self.assertRaises(HTTPException) as raised:
+                    self.service.create_admin(
+                        AdminCreateRequest(username="tamper", password="correct-horse-battery", permissions=[code]),
+                        manager,
+                    )
+                self.assertIn(raised.exception.status_code, (400, 403))
+
+    def test_holding_the_permission_lets_you_delegate_it(self):
+        manager = self._make("manager", [MANAGE_PERMISSIONS, "teams.create"])
+        created = self.service.create_admin(
+            AdminCreateRequest(
+                username="delegate",
+                password="correct-horse-battery",
+                email="delegate@example.com",
+                phone_code="+91",
+                phone_number="9200000900",
+                permissions=["teams.create"],
+            ),
+            manager,
+        )
+        self.assertEqual(created.permissions, ["teams.create"])
 
 
 if __name__ == "__main__":

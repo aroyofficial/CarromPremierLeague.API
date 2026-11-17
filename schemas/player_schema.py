@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import date
 
@@ -8,6 +8,9 @@ class PlayerCreateRequest(BaseModel):
     last_name: str
     date_of_birth: Optional[date] = None
     nationality_id: Optional[int] = None
+    # Optional. Stored only in canonical E.164 form and never returned by public responses.
+    phone_code: Optional[str] = Field(None, max_length=8)
+    phone_number: Optional[str] = Field(None, max_length=20)
 
 
 class PlayerUpdateRequest(BaseModel):
@@ -15,6 +18,8 @@ class PlayerUpdateRequest(BaseModel):
     last_name: Optional[str] = None
     date_of_birth: Optional[date] = None
     nationality_id: Optional[int] = None
+    phone_code: Optional[str] = Field(None, max_length=8)
+    phone_number: Optional[str] = Field(None, max_length=20)
 
 
 class PlayerResponse(BaseModel):

@@ -7,12 +7,13 @@ from fastapi import HTTPException, status
 
 logger = logging.getLogger("cpl.mail")
 
+from core.phone_numbers import PhoneNumberError, PhoneTaken, canonicalize
+from services.phone_otp import PhoneOtpService
 from core.permissions import (
     ALL_CODES,
     MANAGE_PERMISSIONS,
     UPDATE_ADMINS,
     USE_ASSISTANT,
-    describe,
     denied_message,
     missing_parent_message,
     missing_parents,
@@ -42,7 +43,27 @@ from core import totp
 from core.config import settings
 from core.secret_box import seal, unseal
 from services import passkeys
-from services.admin_codes import CODE_MINUTES, MAX_PER_HOUR, TICKET_PURPOSE, MemoryCodeStore, _utcnow
+from services.admin_codes import (
+    CODE_EXPIRED,
+    CODE_INCORRECT,
+    CODE_LIMITED,
+    CODE_MINUTES,
+    CODE_MISSING,
+    CODE_OK,
+    CODE_USED,
+    MAX_PER_HOUR,
+    TICKET_PURPOSE,
+    MemoryCodeStore,
+    _utcnow,
+)
+
+CODE_MESSAGES = {
+    CODE_INCORRECT: "That code is not right. Check the newest email and try again.",
+    CODE_EXPIRED: "That code has expired. Send a new code and use that one.",
+    CODE_USED: "That code was already used. Send a new code if you need another.",
+    CODE_LIMITED: "Too many wrong codes. Wait a few minutes, then send a new code.",
+    CODE_MISSING: "Send a code first, then enter it here.",
+}
 from services.admin_mfa import MAX_CHALLENGE_ATTEMPTS, MemoryMfaStore
 from services.admin_sessions import MemorySessionStore
 from services.mailer import MailError, MemoryMailer
@@ -51,13 +72,14 @@ TOTP_ISSUER = "Carrom Premier League"
 
 
 class AuthService:
-    def __init__(self, repository: AdminRepository, permissions: PermissionRepository, mailer=None, codes=None, sessions=None, mfa=None):
+    def __init__(self, repository: AdminRepository, permissions: PermissionRepository, mailer=None, codes=None, sessions=None, mfa=None, phone_otp=None):
         self.repository = repository
         self.permissions = permissions
         self.mailer = mailer if mailer is not None else MemoryMailer()
         self.codes = codes if codes is not None else MemoryCodeStore()
         self.sessions = sessions if sessions is not None else MemorySessionStore()
         self.mfa = mfa if mfa is not None else MemoryMfaStore()
+        self.phone_otp = phone_otp if phone_otp is not None else PhoneOtpService()
 
     @staticmethod
     def _normalize_username(username: str) -> str:
@@ -363,6 +385,7 @@ class AuthService:
             phone_number=record.get("PhoneNumber"),
             email=record.get("Email"),
             avatar_url=record.get("AvatarUrl"),
+            phone_verified=record.get("PhoneVerifiedAt") is not None,
         )
 
     def list_admins(self) -> list[AdminResponse]:
@@ -414,6 +437,7 @@ class AuthService:
             "gender": request.gender,
             "phone_code": request.phone_code,
             "phone_number": request.phone_number,
+            "phone_e164": AuthService._e164(request.phone_code, request.phone_number),
             "email": request.email,
         }
 
@@ -429,20 +453,23 @@ class AuthService:
             if missing:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"You can only grant permissions you hold. You do not hold {describe(missing)}.",
+                    detail="You can only grant permissions you already hold.",
                 )
             self._ensure_parents(requested)
         self._require_identity(request)
         self._require_mail()
         password = self._generated_password()
-        created = self._create(
-            request,
-            requested,
-            actor.id,
-            password=password,
-            is_active=False,
-            must_change_password=True,
-        )
+        try:
+            created = self._create(
+                request,
+                requested,
+                actor.id,
+                password=password,
+                is_active=False,
+                must_change_password=True,
+            )
+        except PhoneTaken:
+            raise HTTPException(status_code=409, detail="That phone number is already used.") from None
         self._send(lambda: self.mailer.welcome(created, password), created.id)
         return created
 
@@ -454,14 +481,17 @@ class AuthService:
             )
         if not request.password:
             raise HTTPException(status_code=400, detail="Choose a password for the first admin.")
-        return self._create(
-            request,
-            set(ALL_CODES),
-            None,
-            password=request.password,
-            is_active=True,
-            must_change_password=False,
-        )
+        try:
+            return self._create(
+                request,
+                set(ALL_CODES),
+                None,
+                password=request.password,
+                is_active=True,
+                must_change_password=False,
+            )
+        except PhoneTaken:
+            raise HTTPException(status_code=409, detail="That phone number is already used.") from None
 
     def update_admin(
         self,
@@ -500,8 +530,7 @@ class AuthService:
         if "password" in changes:
             if not existing.email:
                 raise HTTPException(status_code=400, detail="Add an email address to your profile first.")
-            if not self.codes.verify(admin_id, self._password_purpose(existing), existing.email, password_code or ""):
-                raise HTTPException(status_code=400, detail="Enter the code sent to your email address.")
+            self._require_code(admin_id, self._password_purpose(existing), existing.email, password_code)
         if "email" in changes:
             if not changes["email"]:
                 raise HTTPException(status_code=400, detail="Email is required.")
@@ -514,8 +543,22 @@ class AuthService:
         if "phone_code" in changes or "phone_number" in changes:
             code = changes["phone_code"] if "phone_code" in changes else existing.phone_code
             number = changes["phone_number"] if "phone_number" in changes else existing.phone_number
-            if not code or not number:
-                raise HTTPException(status_code=400, detail="Contact number is required.")
+            if (code is None) != (number is None):
+                raise HTTPException(status_code=400, detail="Contact number needs both a country code and a number.")
+            if code and number:
+                code, number, e164 = canonicalize(code, number)
+                self._require_unique_phone(e164, admin_id)
+                if e164 != self._e164(existing.phone_code, existing.phone_number):
+                    # A new number is not trusted until its code is confirmed.
+                    changes["phone_verified_at"] = None
+                changes["phone_code"] = code
+                changes["phone_number"] = number
+                changes["phone_e164"] = e164
+            else:
+                changes["phone_code"] = None
+                changes["phone_number"] = None
+                changes["phone_e164"] = None
+                changes["phone_verified_at"] = None
         if "username" in changes:
             username = self._normalize_username(changes["username"])
             duplicate = self.repository.get_credentials_by_username(username)
@@ -543,7 +586,10 @@ class AuthService:
             self._ensure_other_manager(existing)
             changes["increment_token_version"] = True
         ends_session = bool(changes.get("increment_token_version"))
-        updated = self.repository.update(admin_id, changes)
+        try:
+            updated = self.repository.update(admin_id, changes)
+        except PhoneTaken:
+            raise HTTPException(status_code=409, detail="That phone number is already used.") from None
         if ends_session:
             self.sessions.clear(admin_id)
         if password_changed and updated and updated.email:
@@ -608,11 +654,22 @@ class AuthService:
             raise HTTPException(status_code=400, detail=detail)
         self._write_password(record["Id"], request.password, bool(record.get("MustChangePassword")), "reset")
 
+    def _require_code(self, admin_id: int, purpose: str, destination: str | None, code: str | None) -> None:
+        """Raise a specific, non-enumerating message for each way a code can fail."""
+        reason = self.codes.check(admin_id, purpose, destination or "", code or "")
+        if reason == CODE_OK:
+            return
+        if reason == CODE_LIMITED:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=CODE_MESSAGES[CODE_LIMITED],
+            )
+        raise HTTPException(status_code=400, detail=CODE_MESSAGES[reason])
+
     def verify_password_code(self, admin: AdminResponse, code: str) -> PasswordTicket:
         if not admin.email:
             raise HTTPException(status_code=400, detail="Add an email address to your profile first.")
-        if not self.codes.verify(admin.id, self._password_purpose(admin), admin.email, code):
-            raise HTTPException(status_code=400, detail="That code is not right. Check the latest email or send a new code.")
+        self._require_code(admin.id, self._password_purpose(admin), admin.email, code)
         return self._ticket(admin.id, admin.email)
 
     def change_password(self, admin: AdminResponse, request: ChangePasswordRequest) -> None:
@@ -665,7 +722,7 @@ class AuthService:
         if outside:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"You can only change permissions you hold. You do not hold {describe(outside)}.",
+                detail="You can only change permissions you already hold.",
             )
         self._ensure_parents(requested)
         if MANAGE_PERMISSIONS in revoke:
@@ -705,13 +762,77 @@ class AuthService:
                 detail="Email is not configured. Set the mail sender on the API before this can be sent.",
             )
 
+    def request_phone_code(self, admin_id: int, phone_code: str, phone_number: str, current_admin: AdminResponse) -> None:
+        self._require_self(admin_id, current_admin)
+        code, _national, e164 = self._canonical_phone(phone_code, phone_number)
+        # Rate limits first, so the "already used" answer cannot be probed without limit.
+        self.phone_otp.check_request_allowed("admin", admin_id, code)
+        try:
+            self._require_unique_phone(e164, admin_id)
+        except HTTPException:
+            self.phone_otp.record_refused("admin", admin_id, e164)
+            raise
+        self.phone_otp.request("admin", admin_id, code, e164)
+
+    def confirm_phone_code(
+        self,
+        admin_id: int,
+        phone_code: str,
+        phone_number: str,
+        code: str,
+        current_admin: AdminResponse,
+    ) -> AdminResponse:
+        self._require_self(admin_id, current_admin)
+        canonical_code, national, e164 = self._canonical_phone(phone_code, phone_number)
+        self._require_unique_phone(e164, admin_id)
+        self.phone_otp.verify("admin", admin_id, e164, code)
+        try:
+            self.repository.update(admin_id, {
+                "phone_code": canonical_code,
+                "phone_number": national,
+                "phone_e164": e164,
+                "phone_verified_at": _utcnow(),
+            })
+        except PhoneTaken:
+            raise HTTPException(status_code=409, detail="That phone number is already used.") from None
+        return self.get_admin(admin_id)
+
+    @staticmethod
+    def _require_self(admin_id: int, current_admin: AdminResponse) -> None:
+        if admin_id != current_admin.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admins can change only their own profile and password.",
+            )
+
+    @staticmethod
+    def _canonical_phone(phone_code: str, phone_number: str) -> tuple[str, str, str]:
+        try:
+            return canonicalize(phone_code, phone_number)
+        except PhoneNumberError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+
     def _require_identity(self, request: AdminCreateRequest) -> None:
         if not request.email:
             raise HTTPException(status_code=400, detail="Email is required.")
-        if not request.phone_code or not request.phone_number:
-            raise HTTPException(status_code=400, detail="Contact number is required.")
+        if request.phone_code and request.phone_number:
+            self._require_unique_phone(self._e164(request.phone_code, request.phone_number), None)
         if self.repository.find_email(request.email):
             raise HTTPException(status_code=409, detail="That email address is already used by an admin.")
+
+    @staticmethod
+    def _e164(phone_code: str | None, phone_number: str | None) -> str | None:
+        if not phone_code or not phone_number:
+            return None
+        _code, _national, e164 = canonicalize(phone_code, phone_number)
+        return e164
+
+    def _require_unique_phone(self, e164: str | None, except_admin_id: int | None) -> None:
+        if not e164:
+            return
+        owner = self.repository.find_phone(e164)
+        if owner and not (owner[0] == "admin" and owner[1] == except_admin_id):
+            raise HTTPException(status_code=409, detail="That phone number is already used.")
 
     @staticmethod
     def _generated_password() -> str:

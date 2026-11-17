@@ -36,5 +36,5 @@ class ValidationResponseTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
         body = response.json()
-        self.assertIn("10 digits", body["message"])
+        self.assertIn("Indian mobile number", body["message"])
         self.assertIsInstance(body["data"], list)

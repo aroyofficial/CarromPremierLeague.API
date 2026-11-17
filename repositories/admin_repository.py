@@ -1,10 +1,11 @@
 from datetime import date, datetime
 
+from core.phone_numbers import claim_phone, raise_if_phone_taken
 from schemas.auth_schema import AdminResponse
 
 _ADMIN_COLUMNS = """
     Id, Username, IsActive, MustChangePassword, FirstName, LastName, DateOfBirth, Gender,
-    PhoneCode, PhoneNumber, Email, AvatarUrl, PasswordChangedAt
+    PhoneCode, PhoneNumber, Email, AvatarUrl, PasswordChangedAt, PhoneVerifiedAt
 """
 
 
@@ -36,6 +37,7 @@ class AdminRepository:
             avatar_url=row.get("AvatarUrl"),
             must_change_password=bool(row.get("MustChangePassword")),
             password_changed_at=row.get("PasswordChangedAt"),
+            phone_verified=row.get("PhoneVerifiedAt") is not None,
         )
 
     def count_active(self) -> int:
@@ -75,6 +77,21 @@ class AdminRepository:
         row = cursor.fetchone()
         return int(row["Id"]) if row else None
 
+    def find_phone(self, e164: str) -> tuple[str, int] | None:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            SELECT TOP (1) OwnerKind, OwnerId
+            FROM tblContactPhones
+            WHERE PhoneE164 = %s
+            """,
+            (e164,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return str(row["OwnerKind"]), int(row["OwnerId"])
+
     def get_by_id(self, admin_id: int) -> AdminResponse | None:
         cursor = self.db.cursor()
         cursor.execute(
@@ -112,13 +129,27 @@ class AdminRepository:
     ) -> AdminResponse:
         profile = profile or {}
         cursor = self.db.cursor()
+        try:
+            self._insert_admin(cursor, username, password_hash, password_salt, password_iterations,
+                               profile, is_active, must_change_password)
+        except Exception as exc:
+            raise_if_phone_taken(self.db, exc)
+            raise
+        admin_id = int(cursor.lastrowid)
+        claim_phone(self.db, "admin", admin_id, profile.get("phone_e164"))
+        self.db.commit()
+        return self.get_by_id(admin_id)
+
+    @staticmethod
+    def _insert_admin(cursor, username, password_hash, password_salt, password_iterations,
+                      profile, is_active, must_change_password) -> None:
         cursor.execute(
             """
             INSERT INTO tblAdmins (
                 Username, PasswordHash, PasswordSalt, PasswordIterations, IsActive, MustChangePassword,
-                FirstName, LastName, DateOfBirth, Gender, PhoneCode, PhoneNumber, Email
+                FirstName, LastName, DateOfBirth, Gender, PhoneCode, PhoneNumber, PhoneE164, Email
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 username,
@@ -133,11 +164,10 @@ class AdminRepository:
                 profile.get("gender"),
                 profile.get("phone_code"),
                 profile.get("phone_number"),
+                profile.get("phone_e164"),
                 profile.get("email"),
             ),
         )
-        self.db.commit()
-        return self.get_by_id(cursor.lastrowid)
 
     def update(self, admin_id: int, values: dict) -> AdminResponse | None:
         if not values:
@@ -155,6 +185,8 @@ class AdminRepository:
             "gender": "Gender",
             "phone_code": "PhoneCode",
             "phone_number": "PhoneNumber",
+            "phone_e164": "PhoneE164",
+            "phone_verified_at": "PhoneVerifiedAt",
             "email": "Email",
             "password_changed_at": "PasswordChangedAt",
         }
@@ -163,14 +195,20 @@ class AdminRepository:
         if increment_token_version:
             fields.append("TokenVersion = TokenVersion + 1")
         cursor = self.db.cursor()
-        cursor.execute(
-            f"""
-            UPDATE tblAdmins
-            SET {", ".join(fields)}, UpdatedAt = SYSUTCDATETIME()
-            WHERE Id = %s AND Void = 0
-            """,
-            tuple(values.values()) + (admin_id,),
-        )
+        try:
+            cursor.execute(
+                f"""
+                UPDATE tblAdmins
+                SET {", ".join(fields)}, UpdatedAt = SYSUTCDATETIME()
+                WHERE Id = %s AND Void = 0
+                """,
+                tuple(values.values()) + (admin_id,),
+            )
+        except Exception as exc:
+            raise_if_phone_taken(self.db, exc)
+            raise
+        if "phone_e164" in values or "phone_code" in values or "phone_number" in values:
+            claim_phone(self.db, "admin", admin_id, values.get("phone_e164"))
         self.db.commit()
         return self.get_by_id(admin_id)
 
@@ -184,6 +222,7 @@ class AdminRepository:
             """,
             (admin_id,),
         )
+        claim_phone(self.db, "admin", admin_id, None)
         self.db.commit()
         return cursor.rowcount > 0
 

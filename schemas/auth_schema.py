@@ -69,9 +69,7 @@ class AdminProfileFields(BaseModel):
 
     @field_validator("phone_number")
     @classmethod
-    def ten_digit_number(cls, value):
-        if value is not None and not (len(value) == 10 and value.isdigit()):
-            raise ValueError("Contact number must be exactly 10 digits.")
+    def keep_phone_text(cls, value):
         return value
 
     @field_validator("date_of_birth")
@@ -83,8 +81,18 @@ class AdminProfileFields(BaseModel):
 
     @model_validator(mode="after")
     def contact_number_is_complete(self):
+        if self.phone_code is None and self.phone_number is None:
+            return self
         if (self.phone_code is None) != (self.phone_number is None):
             raise ValueError("Contact number needs both a country code and a number.")
+        from core.phone_numbers import PhoneNumberError, canonicalize
+
+        try:
+            code, national, _e164 = canonicalize(self.phone_code, self.phone_number)
+        except PhoneNumberError as exc:
+            raise ValueError(str(exc)) from exc
+        self.phone_code = code
+        self.phone_number = national
         return self
 
 
@@ -224,6 +232,16 @@ class AdminResponse(BaseModel):
     avatar_url: str | None = None
     must_change_password: bool = False
     password_changed_at: datetime | None = None
+    phone_verified: bool = False
+
+
+class PhoneCodeRequest(BaseModel):
+    phone_code: str = Field(..., min_length=1, max_length=8)
+    phone_number: str = Field(..., min_length=1, max_length=20)
+
+
+class PhoneVerifyRequest(PhoneCodeRequest):
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
 class PermissionResponse(BaseModel):

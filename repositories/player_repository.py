@@ -1,4 +1,5 @@
 from typing import Optional, List
+from core.phone_numbers import claim_phone, raise_if_phone_taken
 from schemas.player_schema import (
     PlayerCreateRequest,
     PlayerUpdateRequest,
@@ -123,31 +124,65 @@ class PlayerRepository:
             nationality_id=row["NationalityId"]
         )
 
-    def create(self, request: PlayerCreateRequest) -> PlayerResponse:
+    def get_phone(self, player_id: int) -> tuple[Optional[str], Optional[str]]:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT PhoneCode, PhoneNumber
+            FROM tblPlayers
+            WHERE Id = %s AND Void = 0
+        """, (player_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None, None
+        return row["PhoneCode"], row["PhoneNumber"]
+
+    def find_phone(self, e164: str) -> Optional[tuple[str, int]]:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT TOP (1) OwnerKind, OwnerId
+            FROM tblContactPhones
+            WHERE PhoneE164 = %s
+        """, (e164,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return str(row["OwnerKind"]), int(row["OwnerId"])
+
+    def create(self, request: PlayerCreateRequest, phone: Optional[dict] = None) -> PlayerResponse:
         cursor = self.db.cursor()
+        phone = phone or {"phone_code": None, "phone_number": None, "phone_e164": None}
 
         query = """
             INSERT INTO tblPlayers
-            (FirstName, LastName, DateOfBirth, NationalityId)
-            VALUES (%s, %s, %s, %s)
+            (FirstName, LastName, DateOfBirth, NationalityId, PhoneCode, PhoneNumber, PhoneE164)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
         """
 
-        cursor.execute(query, (
-            request.first_name,
-            request.last_name,
-            request.date_of_birth,
-            request.nationality_id
-        ))
+        try:
+            cursor.execute(query, (
+                request.first_name,
+                request.last_name,
+                request.date_of_birth,
+                request.nationality_id,
+                phone["phone_code"],
+                phone["phone_number"],
+                phone["phone_e164"],
+            ))
+        except Exception as exc:
+            raise_if_phone_taken(self.db, exc)
+            raise
+        player_id = cursor.lastrowid
+        claim_phone(self.db, "player", player_id, phone["phone_e164"])
 
         self.db.commit()
-        player_id = cursor.lastrowid
 
         return self.get_by_id(player_id)
 
-    def update(self, player_id: int, request: PlayerUpdateRequest) -> Optional[PlayerResponse]:
+    def update(self, player_id: int, request: PlayerUpdateRequest, phone: Optional[dict] = None) -> Optional[PlayerResponse]:
+        """phone is None when the number is not being changed; otherwise it always holds all three keys."""
         update_data = request.model_dump(exclude_unset=True)
 
-        if not update_data:
+        if not update_data and phone is None:
             return self.get_by_id(player_id)
 
         field_mapping = {
@@ -165,6 +200,10 @@ class PlayerRepository:
                 fields.append(f"{field_mapping[key]} = %s")
                 values.append(value)
 
+        if phone is not None:
+            fields += ["PhoneCode = %s", "PhoneNumber = %s", "PhoneE164 = %s"]
+            values += [phone["phone_code"], phone["phone_number"], phone["phone_e164"]]
+
         if not fields:
             return self.get_by_id(player_id)
 
@@ -174,10 +213,15 @@ class PlayerRepository:
             WHERE Id = %s AND Void = 0
         """
         values.append(player_id)
-        
 
         cursor = self.db.cursor()
-        cursor.execute(query, tuple(values))
+        try:
+            cursor.execute(query, tuple(values))
+        except Exception as exc:
+            raise_if_phone_taken(self.db, exc)
+            raise
+        if phone is not None:
+            claim_phone(self.db, "player", player_id, phone["phone_e164"])
         self.db.commit()
 
         return self.get_by_id(player_id)
@@ -211,6 +255,7 @@ class PlayerRepository:
             SET Void = 1
             WHERE Id = %s AND Void = 0
         """, (player_id,))
+        claim_phone(self.db, "player", player_id, None)
         self.db.commit()
 
         return cursor.rowcount > 0
