@@ -64,6 +64,11 @@ class AdminRepository:
         )
         return cursor.fetchone()
 
+    def username_taken(self, username: str) -> bool:
+        cursor = self.db.cursor()
+        cursor.execute("SELECT 1 AS Taken FROM tblAdmins WHERE Username = %s", (username,))
+        return cursor.fetchone() is not None
+
     def find_email(self, email: str) -> int | None:
         cursor = self.db.cursor()
         cursor.execute(

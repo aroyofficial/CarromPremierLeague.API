@@ -97,7 +97,13 @@ class AdminProfileFields(BaseModel):
 
 
 class AdminCreateRequest(AdminProfileFields):
-    username: str = Field(..., min_length=3, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
+    username: str | None = Field(
+        None,
+        min_length=3,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9_.-]+$",
+        description="Ignored when a name or email is present. The username is generated from those and cannot be changed.",
+    )
     password: str | None = Field(
         None,
         min_length=12,
@@ -108,7 +114,13 @@ class AdminCreateRequest(AdminProfileFields):
 
 
 class AdminUpdateRequest(AdminProfileFields):
-    username: str | None = Field(None, min_length=3, max_length=100, pattern=r"^[A-Za-z0-9_.-]+$")
+    username: str | None = Field(
+        None,
+        min_length=3,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9_.-]+$",
+        description="Rejected when it differs from the current username. A username cannot be changed.",
+    )
     password: str | None = Field(None, min_length=12, max_length=256)
     is_active: bool | None = None
     email_code: str | None = Field(None, min_length=6, max_length=6, pattern=r"^\d{6}$")

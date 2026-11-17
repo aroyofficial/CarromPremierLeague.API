@@ -318,6 +318,38 @@ class AuthServiceTests(unittest.TestCase):
         )
         self.assertIsNone(cleared.phone_number)
 
+    def test_username_is_generated_and_cannot_change(self):
+        created = self.service.create_admin(
+            AdminCreateRequest(
+                first_name="Ada",
+                last_name="Lovelace",
+                email="ada@example.com",
+                phone_code="+91",
+                phone_number="9000000081",
+            ),
+            self.primary,
+        )
+        self.assertEqual(created.username, "ada.lovelace")
+        active = self._activate(created)
+        second = self.service.create_admin(
+            AdminCreateRequest(
+                first_name="Ada",
+                last_name="Lovelace",
+                email="ada.other@example.com",
+                phone_code="+91",
+                phone_number="9000000082",
+            ),
+            self.primary,
+        )
+        self.assertEqual(second.username, "ada.lovelace.ada.other")
+        with self.assertRaises(HTTPException) as raised:
+            self.service.update_admin(active.id, AdminUpdateRequest(username="someone-else"), active)
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.detail, "Username cannot be changed.")
+        kept = self.service.update_admin(active.id, AdminUpdateRequest(last_name="King"), active)
+        self.assertEqual(kept.last_name, "King")
+        self.assertEqual(kept.username, "ada.lovelace")
+
     def test_profile_rejects_a_partial_phone_and_a_future_birthday(self):
         with self.assertRaises(ValidationError):
             AdminCreateRequest(username="ada-admin", password="another-password-123", phone_number="7700900123")
@@ -343,10 +375,10 @@ class AuthServiceTests(unittest.TestCase):
         self.assertIn("+91 9000000099", welcome.text)
         password = welcome.text.split("Temporary password: ", 1)[1].splitlines()[0]
         self.assertNotIn("another-password", password)
-        token = self.service.login(LoginRequest(username="new-admin", password=password))
+        token = self.service.login(LoginRequest(username=created.username, password=password))
         self.assertTrue(token.must_change_password)
         with self.assertRaises(HTTPException):
-            self.service.login(LoginRequest(username="new-admin", password="correct-horse-battery"))
+            self.service.login(LoginRequest(username=created.username, password="correct-horse-battery"))
         current = self.service.current_admin(token.access_token)
         with self.assertRaises(HTTPException) as no_code:
             self.service.update_admin(created.id, AdminUpdateRequest(password="replacement-password"), current)
@@ -371,7 +403,7 @@ class AuthServiceTests(unittest.TestCase):
         self.assertTrue(activated.is_active)
         self.assertFalse(activated.must_change_password)
         self.assertIn("now active", self.service.mailer.sent[-1].text.lower() + self.service.mailer.sent[-1].html.lower())
-        signed_in = self.service.login(LoginRequest(username="new-admin", password="replacement-password"))
+        signed_in = self.service.login(LoginRequest(username=created.username, password="replacement-password"))
         self.assertFalse(signed_in.must_change_password)
 
     def test_changing_an_email_needs_the_code_sent_to_it(self):
@@ -440,7 +472,7 @@ class AuthServiceTests(unittest.TestCase):
             self.service.request_email_code(other.id, "else@example.com", self.primary)
         self.assertEqual(code_for_other.exception.status_code, 403)
         other_session = self.service.current_admin(
-            self.service.login(LoginRequest(username="other-admin", password="replacement-password")).access_token
+            self.service.login(LoginRequest(username=other.username, password="replacement-password")).access_token
         )
         with self.assertRaises(HTTPException):
             self.service.update_admin(self.primary.id, AdminUpdateRequest(password="taken-over-password"), other_session)

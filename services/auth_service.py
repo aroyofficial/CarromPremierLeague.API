@@ -1,4 +1,5 @@
 import logging
+import re
 import secrets
 import threading
 from datetime import datetime, timedelta, timezone
@@ -7,6 +8,7 @@ from fastapi import HTTPException, status
 
 logger = logging.getLogger("cpl.mail")
 
+from core.admin_usernames import username_candidates
 from core.phone_numbers import PhoneNumberError, PhoneTaken, canonicalize
 from services.phone_otp import PhoneOtpService
 from core.permissions import (
@@ -84,6 +86,33 @@ class AuthService:
     @staticmethod
     def _normalize_username(username: str) -> str:
         return username.strip().lower()
+
+    def _username_taken(self, username: str) -> bool:
+        taken = getattr(self.repository, "username_taken", None)
+        if taken is not None:
+            return bool(taken(username))
+        return self.repository.get_credentials_by_username(username) is not None
+
+    def _generated_username(self, request: AdminCreateRequest) -> str:
+        candidates = username_candidates(request.first_name, request.last_name, request.email)
+        if not candidates:
+            if not (request.first_name or request.last_name or request.email):
+                supplied = self._normalize_username(request.username or "")
+                if re.fullmatch(r"[a-z0-9_.-]{3,100}", supplied):
+                    if self._username_taken(supplied):
+                        raise HTTPException(status_code=409, detail="Username already exists.")
+                    return supplied
+            raise HTTPException(
+                status_code=400,
+                detail="Enter a first name, last name, or email long enough to create a username.",
+            )
+        for candidate in candidates:
+            if not self._username_taken(candidate):
+                return candidate
+        raise HTTPException(
+            status_code=409,
+            detail="A unique username could not be created from that name and email.",
+        )
 
     @staticmethod
     def _known_codes(codes: list[str]) -> set[str]:
@@ -411,9 +440,7 @@ class AuthService:
         is_active: bool,
         must_change_password: bool,
     ) -> AdminResponse:
-        username = self._normalize_username(request.username)
-        if self.repository.get_credentials_by_username(username):
-            raise HTTPException(status_code=409, detail="Username already exists.")
+        username = self._generated_username(request)
         password_hash, password_salt = hash_password(password)
         created = self.repository.create(
             username,
@@ -560,11 +587,9 @@ class AuthService:
                 changes["phone_e164"] = None
                 changes["phone_verified_at"] = None
         if "username" in changes:
-            username = self._normalize_username(changes["username"])
-            duplicate = self.repository.get_credentials_by_username(username)
-            if duplicate and duplicate["Id"] != admin_id:
-                raise HTTPException(status_code=409, detail="Username already exists.")
-            changes["username"] = username
+            if self._normalize_username(changes["username"]) != self._normalize_username(existing.username):
+                raise HTTPException(status_code=400, detail="Username cannot be changed.")
+            changes.pop("username")
         password_changed = "password" in changes
         activated = False
         if password_changed:

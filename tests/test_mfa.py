@@ -199,7 +199,7 @@ class MfaFlowTests(unittest.TestCase):
             self.admin,
         )
         password = self.service.mailer.sent[-1].text.split("Temporary password: ", 1)[1].splitlines()[0]
-        token = self.service.login(LoginRequest(username="new-admin", password=password))
+        token = self.service.login(LoginRequest(username=created.username, password=password))
         self.assertFalse(token.mfa_required)
         self.assertTrue(token.must_change_password)
         self.assertFalse(self.service.get_admin(created.id).is_active)

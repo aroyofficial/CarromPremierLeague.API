@@ -257,8 +257,13 @@ class AdminPermissionRuleTests(unittest.TestCase):
 
     def test_self_service_profile_change_without_admins_update(self):
         member = self._activate(self._make("member", ["teams.create"]))
-        renamed = self.service.update_admin(member.id, AdminUpdateRequest(username="member2"), member)
-        self.assertEqual(renamed.username, "member2")
+        updated = self.service.update_admin(member.id, AdminUpdateRequest(first_name="Member"), member)
+        self.assertEqual(updated.first_name, "Member")
+        self.assertEqual(updated.username, member.username)
+        with self.assertRaises(HTTPException) as raised:
+            self.service.update_admin(member.id, AdminUpdateRequest(username="member2"), member)
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.detail, "Username cannot be changed.")
         with self.assertRaises(HTTPException) as raised:
             self.service.update_admin(self.owner.id, AdminUpdateRequest(username="taken-over"), member)
         self.assertEqual(raised.exception.status_code, 403)
