@@ -15,7 +15,7 @@ os.environ.setdefault("CPL_DB_PWD", "unused")
 os.environ.setdefault("CPL_DB_NAME", "unused")
 os.environ.setdefault("CPL_DB_POOL_SIZE", "1")
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -658,6 +658,45 @@ class AuthServiceTests(unittest.TestCase):
         ))
         self.assertFalse(other.pending)
         self.assertTrue(other.access_token)
+
+    def test_an_idle_session_lets_the_next_device_sign_in(self):
+        first = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-one", device_label="Chrome"
+        ))
+        self.service.sessions.sessions[self.primary.id].seen_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=6)
+        with self.assertRaises(HTTPException) as expired:
+            self.service.current_admin(first.access_token)
+        self.assertIn("5 minutes", expired.exception.detail)
+        second = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-two", device_label="Firefox"
+        ))
+        self.assertFalse(second.pending)
+        self.assertEqual(self.service.current_admin(second.access_token).id, self.primary.id)
+
+    def test_a_recent_session_still_waits_for_approval(self):
+        self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-one", device_label="Chrome"
+        ))
+        self.service.sessions.sessions[self.primary.id].seen_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=4)
+        second = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-two", device_label="Firefox"
+        ))
+        self.assertTrue(second.pending)
+
+    def test_the_waiting_device_can_take_the_session(self):
+        first = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-one", device_label="Chrome"
+        ))
+        second = self.service.login(LoginRequest(
+            username="primary-admin", password="correct-horse-battery", device_id="device-two", device_label="Firefox"
+        ))
+        taken = self.service.take_login(second.request_id)
+        self.assertTrue(taken.access_token)
+        with self.assertRaises(HTTPException):
+            self.service.current_admin(first.access_token)
+        self.assertEqual(self.service.current_admin(taken.access_token).id, self.primary.id)
+        with self.assertRaises(HTTPException):
+            self.service.take_login(second.request_id)
 
     def test_second_bootstrap_is_rejected(self):
         with self.assertRaises(HTTPException) as raised:

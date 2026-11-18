@@ -2,9 +2,20 @@
 
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 REQUEST_MINUTES = 10
+IDLE_MINUTES = 5
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _idle(seen_at: datetime | None, now: datetime) -> bool:
+    if seen_at is None:
+        return False
+    return seen_at + timedelta(minutes=IDLE_MINUTES) <= now
 
 
 @dataclass
@@ -13,6 +24,7 @@ class LiveSession:
     device_id: str
     device_label: str
     expires_at: datetime
+    seen_at: datetime | None = None
 
 
 @dataclass
@@ -36,9 +48,29 @@ class MemorySessionStore:
         self.sessions: dict[int, LiveSession] = {}
         self.requests: dict[str, LoginChallenge] = {}
 
-    def begin(self, admin_id: int, device_id: str, device_label: str | None, now: datetime) -> LoginChallenge | None:
+    def drop_if_stale(self, admin_id: int, now: datetime) -> bool:
         current = self.sessions.get(admin_id)
-        if current is None or current.expires_at <= now or current.device_id == device_id:
+        if current is None or not (current.expires_at <= now or _idle(current.seen_at, now)):
+            return False
+        self.sessions.pop(admin_id, None)
+        return True
+
+    def touch(self, admin_id: int, now: datetime) -> None:
+        current = self.sessions.get(admin_id)
+        if current is None or current.expires_at <= now or _idle(current.seen_at, now):
+            return
+        current.seen_at = now
+
+    def pending_request(self, request_id: str, now: datetime) -> LoginChallenge | None:
+        challenge = self.requests.get(request_id)
+        if challenge is None or challenge.status != "pending" or challenge.expires_at <= now:
+            return None
+        return challenge
+
+    def begin(self, admin_id: int, device_id: str, device_label: str | None, now: datetime) -> LoginChallenge | None:
+        self.drop_if_stale(admin_id, now)
+        current = self.sessions.get(admin_id)
+        if current is None or current.device_id == device_id:
             return None
         for item in list(self.requests.values()):
             if item.admin_id == admin_id and item.status == "pending":
@@ -54,12 +86,14 @@ class MemorySessionStore:
         self.requests[challenge.id] = challenge
         return challenge
 
-    def activate(self, admin_id: int, device_id: str, device_label: str | None, expires_at: datetime) -> None:
-        self.sessions[admin_id] = LiveSession(admin_id, device_id, _label(device_label), expires_at)
+    def activate(
+        self, admin_id: int, device_id: str, device_label: str | None, expires_at: datetime, seen_at: datetime | None = None
+    ) -> None:
+        self.sessions[admin_id] = LiveSession(admin_id, device_id, _label(device_label), expires_at, seen_at or _now())
 
     def live(self, admin_id: int, now: datetime) -> LiveSession | None:
         current = self.sessions.get(admin_id)
-        if current is None or current.expires_at <= now:
+        if current is None or current.expires_at <= now or _idle(current.seen_at, now):
             return None
         return current
 
@@ -122,18 +156,61 @@ class SqlSessionStore:
     def __init__(self, db):
         self.db = db
 
-    def begin(self, admin_id: int, device_id: str, device_label: str | None, now: datetime) -> LoginChallenge | None:
+    def drop_if_stale(self, admin_id: int, now: datetime) -> bool:
         cursor = self.db.cursor()
         cursor.execute(
             """
-            SELECT DeviceId, ExpiresAt
+            SELECT ExpiresAt, LastSeenAt
             FROM tblAdminSessions
             WHERE AdminId = %s
             """,
             (admin_id,),
         )
         current = cursor.fetchone()
-        if current is None or current["ExpiresAt"] <= now or current["DeviceId"] == device_id:
+        if current is None or not (current["ExpiresAt"] <= now or _idle(current["LastSeenAt"], now)):
+            return False
+        cursor.execute("DELETE FROM tblAdminSessions WHERE AdminId = %s", (admin_id,))
+        self.db.commit()
+        return True
+
+    def touch(self, admin_id: int, now: datetime) -> None:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            UPDATE tblAdminSessions
+            SET LastSeenAt = %s
+            WHERE AdminId = %s AND ExpiresAt > %s AND (LastSeenAt IS NULL OR LastSeenAt > %s)
+            """,
+            (now, admin_id, now, now - timedelta(minutes=IDLE_MINUTES)),
+        )
+        self.db.commit()
+
+    def pending_request(self, request_id: str, now: datetime) -> LoginChallenge | None:
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            SELECT Id, AdminId, DeviceId, DeviceLabel, Status, ExpiresAt
+            FROM tblAdminLoginRequests
+            WHERE Id = %s AND Status = 'pending' AND ExpiresAt > %s
+            """,
+            (request_id, now),
+        )
+        return self._row(cursor.fetchone())
+
+    def begin(self, admin_id: int, device_id: str, device_label: str | None, now: datetime) -> LoginChallenge | None:
+        if self.drop_if_stale(admin_id, now):
+            return None
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            SELECT DeviceId
+            FROM tblAdminSessions
+            WHERE AdminId = %s AND ExpiresAt > %s
+            """,
+            (admin_id, now),
+        )
+        current = cursor.fetchone()
+        if current is None or current["DeviceId"] == device_id:
             return None
         cursor.execute(
             """
@@ -161,15 +238,18 @@ class SqlSessionStore:
         self.db.commit()
         return challenge
 
-    def activate(self, admin_id: int, device_id: str, device_label: str | None, expires_at: datetime) -> None:
+    def activate(
+        self, admin_id: int, device_id: str, device_label: str | None, expires_at: datetime, seen_at: datetime | None = None
+    ) -> None:
+        seen = seen_at or _now()
         cursor = self.db.cursor()
         cursor.execute("DELETE FROM tblAdminSessions WHERE AdminId = %s", (admin_id,))
         cursor.execute(
             """
-            INSERT INTO tblAdminSessions (AdminId, DeviceId, DeviceLabel, ExpiresAt)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO tblAdminSessions (AdminId, DeviceId, DeviceLabel, ExpiresAt, LastSeenAt)
+            VALUES (%s, %s, %s, %s, %s)
             """,
-            (admin_id, device_id, _label(device_label), expires_at),
+            (admin_id, device_id, _label(device_label), expires_at, seen),
         )
         self.db.commit()
 
@@ -177,16 +257,16 @@ class SqlSessionStore:
         cursor = self.db.cursor()
         cursor.execute(
             """
-            SELECT AdminId, DeviceId, DeviceLabel, ExpiresAt
+            SELECT AdminId, DeviceId, DeviceLabel, ExpiresAt, LastSeenAt
             FROM tblAdminSessions
             WHERE AdminId = %s AND ExpiresAt > %s
             """,
             (admin_id, now),
         )
         row = cursor.fetchone()
-        if row is None:
+        if row is None or _idle(row["LastSeenAt"], now):
             return None
-        return LiveSession(int(row["AdminId"]), row["DeviceId"], row["DeviceLabel"], row["ExpiresAt"])
+        return LiveSession(int(row["AdminId"]), row["DeviceId"], row["DeviceLabel"], row["ExpiresAt"], row["LastSeenAt"])
 
     def clear(self, admin_id: int) -> None:
         cursor = self.db.cursor()

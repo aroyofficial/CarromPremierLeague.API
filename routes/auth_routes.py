@@ -305,6 +305,12 @@ def claim_login(body: LoginApproval, service: AuthService = Depends(get_service)
     return ApiResponse(success=True, message=None if data.pending else "Login successful.", data=data)
 
 
+@router.post("/auth/login-request/take", response_model=ApiResponse[TokenResponse], summary="Take the session from the other device")
+def take_login(body: LoginApproval, service: AuthService = Depends(get_service)):
+    data = service.take_login(body.request_id)
+    return ApiResponse(success=True, message="This device is signed in.", data=data)
+
+
 @router.post(
     "/auth/bootstrap",
     status_code=status.HTTP_201_CREATED,

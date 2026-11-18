@@ -52,6 +52,7 @@ class CatalogTests(unittest.TestCase):
         open_writes = {
             ("POST", "/auth/login"),
             ("POST", "/auth/login-request/claim"),
+            ("POST", "/auth/login-request/take"),
             ("POST", "/auth/bootstrap"),
             ("POST", "/auth/forgot-password"),
             ("POST", "/auth/reset-password"),

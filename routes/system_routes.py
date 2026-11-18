@@ -40,6 +40,7 @@ DESCRIPTIONS = {
     ("POST", "/auth/login-request/approve"): "Log out this device and allow the other sign-in",
     ("POST", "/auth/login-request/deny"): "Keep this session and decline the other sign-in",
     ("POST", "/auth/login-request/claim"): "Collect the token after the current session approves",
+    ("POST", "/auth/login-request/take"): "Take the session from the other device without waiting",
     ("POST", "/auth/forgot-password"): "Email a reset code for a username that has an email address",
     ("POST", "/auth/reset-code/verify"): "Check a reset code and get a one-time ticket for setting the new password",
     ("POST", "/auth/reset-password"): "Set a new password with the reset ticket (or the code) for that username",

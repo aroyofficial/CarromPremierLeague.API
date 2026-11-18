@@ -173,6 +173,9 @@ class AuthService:
 
     def _start_session(self, record: dict, device_id: str | None, device_label: str | None, must_change: bool) -> TokenResponse:
         now = _utcnow()
+        if self.sessions.drop_if_stale(record["Id"], now):
+            self.repository.update(record["Id"], {"increment_token_version": True})
+            record = self.repository.get_credentials_by_username(record["Username"])
         if device_id:
             waiting = self.sessions.begin(record["Id"], device_id, device_label, now)
             if waiting is not None:
@@ -191,6 +194,7 @@ class AuthService:
                 device_id,
                 device_label,
                 now + timedelta(minutes=settings.AUTH_TOKEN_EXPIRE_MINUTES),
+                now,
             )
         return TokenResponse(
             access_token=token,
@@ -350,7 +354,7 @@ class AuthService:
         record = self.repository.get_credentials_by_username(admin.username)
         token = self._issue_token(record)
         expires = now + timedelta(minutes=settings.AUTH_TOKEN_EXPIRE_MINUTES)
-        self.sessions.activate(admin.id, challenge.device_id, challenge.device_label, expires)
+        self.sessions.activate(admin.id, challenge.device_id, challenge.device_label, expires, now)
         self.sessions.resolve(admin.id, request_id, "approved", now, token)
         publish_login_request_changed(admin.id)
 
@@ -371,6 +375,34 @@ class AuthService:
         return TokenResponse(
             access_token=challenge.access_token,
             expires_in=settings.AUTH_TOKEN_EXPIRE_MINUTES * 60,
+        )
+
+    def take_login(self, request_id: str) -> TokenResponse:
+        now = _utcnow()
+        challenge = self.sessions.pending_request(request_id, now)
+        if challenge is None:
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="That sign-in request expired. Try again.")
+        admin = self.repository.get_by_id(challenge.admin_id)
+        record = self.repository.get_credentials_by_username(admin.username) if admin else None
+        if not record or (not record["IsActive"] and not record.get("MustChangePassword")):
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="That sign-in request expired. Try again.")
+        self.repository.update(admin.id, {"increment_token_version": True})
+        record = self.repository.get_credentials_by_username(admin.username)
+        token = self._issue_token(record)
+        self.sessions.activate(
+            admin.id,
+            challenge.device_id,
+            challenge.device_label,
+            now + timedelta(minutes=settings.AUTH_TOKEN_EXPIRE_MINUTES),
+            now,
+        )
+        self.sessions.resolve(admin.id, request_id, "approved", now, token)
+        claimed = self.sessions.claim(request_id, now)
+        publish_login_request_changed(admin.id)
+        return TokenResponse(
+            access_token=claimed.access_token if claimed and claimed.access_token else token,
+            expires_in=settings.AUTH_TOKEN_EXPIRE_MINUTES * 60,
+            must_change_password=bool(record.get("MustChangePassword")),
         )
 
     def logout(self, admin: AdminResponse, device_id: str | None = None) -> None:
@@ -404,6 +436,15 @@ class AuthService:
                 detail="Invalid or expired bearer token.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        now = _utcnow()
+        if self.sessions.drop_if_stale(record["Id"], now):
+            self.repository.update(record["Id"], {"increment_token_version": True})
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="This session expired after 5 minutes without activity. Sign in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        self.sessions.touch(record["Id"], now)
         return AdminResponse(
             id=record["Id"],
             username=record["Username"],
