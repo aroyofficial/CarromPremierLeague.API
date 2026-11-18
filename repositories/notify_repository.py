@@ -25,10 +25,14 @@ def _jsonable(value):
     return value
 
 
+ROSTER_KEYS = ("team1_players", "team2_players")
+
+
 def snapshot(match: dict | None) -> dict | None:
+    """The match as stored in an outbox row. Roster names are left out, so queued rows hold no player names."""
     if not match:
         return None
-    return {key: _jsonable(value) for key, value in match.items()}
+    return {key: _jsonable(value) for key, value in match.items() if key not in ROSTER_KEYS}
 
 
 class NotifyRepository:
@@ -56,7 +60,7 @@ class NotifyRepository:
         row = cursor.fetchone()
         if not row:
             return None
-        return {
+        notice = {
             "id": int(row["Id"]),
             "season_id": int(row["SeasonId"]),
             "season_name": row["SeasonName"] or "",
@@ -74,6 +78,55 @@ class NotifyRepository:
             "started_at": row["StartedAt"],
             "created_at": row["CreatedAt"],
         }
+        return self.attach_rosters([notice])[0]
+
+    def roster_names(self, season_id: int, team_ids: list[int]) -> dict[int, list[str]]:
+        """Active players on each team's roster for one season, by team id, in name order."""
+        ids = sorted({int(team_id) for team_id in team_ids if team_id is not None})
+        if not ids:
+            return {}
+        placeholders = ", ".join(["%s"] * len(ids))
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            f"""
+            SELECT pst.TeamId, p.FirstName, p.LastName
+            FROM tblPlayersSeasonsTeams pst
+            JOIN tblPlayers p ON p.Id = pst.PlayerId AND p.Void = 0
+            WHERE pst.SeasonId = %s AND pst.Void = 0 AND pst.TeamId IN ({placeholders})
+            ORDER BY p.FirstName, p.LastName, p.Id
+            """,
+            (int(season_id), *ids),
+        )
+        names: dict[int, list[str]] = {}
+        for row in cursor.fetchall():
+            full = " ".join(part for part in ((row["FirstName"] or "").strip(), (row["LastName"] or "").strip()) if part)
+            if full:
+                names.setdefault(int(row["TeamId"]), []).append(full)
+        return names
+
+    def attach_rosters(self, notices: list[dict]) -> list[dict]:
+        """Add team1_players and team2_players to each notice. One roster query per season.
+
+        The names are added after the outbox snapshot is taken, so they are never stored
+        in a queued row; the worker reads them again when it writes the calendar event.
+        """
+        by_season: dict[int, set[int]] = {}
+        for notice in notices:
+            team_ids = by_season.setdefault(int(notice["season_id"]), set())
+            for key in ("team1_id", "team2_id"):
+                if notice.get(key) is not None:
+                    team_ids.add(int(notice[key]))
+        rosters: dict[tuple[int, int], list[str]] = {}
+        for season_id, team_ids in by_season.items():
+            for team_id, names in self.roster_names(season_id, sorted(team_ids)).items():
+                rosters[(season_id, team_id)] = names
+        for notice in notices:
+            season_id = int(notice["season_id"])
+            team1 = notice.get("team1_id")
+            team2 = notice.get("team2_id")
+            notice["team1_players"] = rosters.get((season_id, int(team1)), []) if team1 is not None else []
+            notice["team2_players"] = rosters.get((season_id, int(team2)), []) if team2 is not None else []
+        return notices
 
     def enqueue(
         self,
@@ -82,11 +135,15 @@ class NotifyRepository:
         before: dict | None = None,
         key: str | None = None,
         connection_id: int | None = None,
+        existing_only: bool = False,
     ) -> int | None:
         key = key or idempotency_key(int(match["id"]), event, match.get("updated_at"))
         notice = {"event": event, "match": snapshot(match), "before": snapshot(before)}
         if connection_id is not None:
             notice["connection_id"] = int(connection_id)
+        if existing_only:
+            # A rename rewrites events already on a calendar. It never adds a match the calendar never had.
+            notice["existing_only"] = True
         payload = json.dumps(notice, separators=(",", ":"))
         cursor = self.db.cursor()
         # Never roll back here: the connection may carry the caller's match write. A duplicate
@@ -156,7 +213,7 @@ class NotifyRepository:
         placeholders = ", ".join(["%s"] * len(claimed))
         cursor.execute(
             f"""
-            SELECT Id, MatchId, EventType, Payload, Attempts
+            SELECT Id, MatchId, EventType, Payload, Attempts, CreatedAt
             FROM tblNotificationOutbox
             WHERE Id IN ({placeholders})
             ORDER BY Id
@@ -283,9 +340,13 @@ class NotifyRepository:
         }
         cursor.execute("SELECT COUNT(*) AS Pending FROM tblNotificationOutbox WHERE Status IN ('pending', 'leased')")
         pending = int((cursor.fetchone() or {}).get("Pending") or 0)
+        cursor.execute("SELECT COUNT(*) AS Leased FROM tblNotificationOutbox WHERE Status = 'leased'")
+        leased = int((cursor.fetchone() or {}).get("Leased") or 0)
         for cid in connection_ids:
             states.setdefault(int(cid), {"last_status": None, "last_detail": "", "last_at": None})
             states[int(cid)]["queue_pending"] = pending > 0
+            # A notice is being written right now. The queue is shared, so this is the worker's state, not one connection's.
+            states[int(cid)]["in_flight"] = leased > 0
         return states
 
     def save_subscription(self, row: dict) -> dict:
@@ -303,7 +364,7 @@ class NotifyRepository:
                     UserAgent = %s, Void = 0, FailureCount = 0,
                     NotifyScheduled = %s, NotifyChanged = %s, NotifyCancelled = %s,
                     NotifyLive = %s, NotifyEnded = %s, NotifyScore = %s, NotifyReminder = %s,
-                    UpdatedAt = SYSUTCDATETIME()
+                    NotifySyncProblem = %s, UpdatedAt = SYSUTCDATETIME()
                 WHERE Id = %s
                 """,
                 (
@@ -311,7 +372,7 @@ class NotifyRepository:
                     row.get("user_agent"),
                     int(row["notify_scheduled"]), int(row["notify_changed"]), int(row["notify_cancelled"]),
                     int(row["notify_live"]), int(row["notify_ended"]), int(row["notify_score"]),
-                    int(row["notify_reminder"]),
+                    int(row["notify_reminder"]), int(row.get("notify_sync_problem", True)),
                     int(existing["Id"]),
                 ),
             )
@@ -321,16 +382,17 @@ class NotifyRepository:
             """
             INSERT INTO tblPushSubscriptions (
                 Endpoint, EndpointHash, P256dh, AuthSecret, AdminId, SeasonId, TeamId, UserAgent,
-                NotifyScheduled, NotifyChanged, NotifyCancelled, NotifyLive, NotifyEnded, NotifyScore, NotifyReminder
+                NotifyScheduled, NotifyChanged, NotifyCancelled, NotifyLive, NotifyEnded, NotifyScore, NotifyReminder,
+                NotifySyncProblem
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 row["endpoint"], endpoint_hash(row["endpoint"]), row["p256dh"], row["auth"], row.get("admin_id"), row.get("season_id"),
                 row.get("team_id"), row.get("user_agent"),
                 int(row["notify_scheduled"]), int(row["notify_changed"]), int(row["notify_cancelled"]),
                 int(row["notify_live"]), int(row["notify_ended"]), int(row["notify_score"]),
-                int(row["notify_reminder"]),
+                int(row["notify_reminder"]), int(row.get("notify_sync_problem", True)),
             ),
         )
         self.db.commit()
@@ -340,8 +402,9 @@ class NotifyRepository:
         cursor = self.db.cursor(dictionary=True)
         cursor.execute(
             """
-            SELECT Id, Endpoint, P256dh, AuthSecret, AdminId, SeasonId, TeamId, Void, FailureCount,
-                   NotifyScheduled, NotifyChanged, NotifyCancelled, NotifyLive, NotifyEnded, NotifyScore, NotifyReminder
+            SELECT Id, Endpoint, P256dh, AuthSecret, AdminId, SeasonId, TeamId, Void, FailureCount, LastSuccessAt,
+                   NotifyScheduled, NotifyChanged, NotifyCancelled, NotifyLive, NotifyEnded, NotifyScore, NotifyReminder,
+                   NotifySyncProblem
             FROM tblPushSubscriptions
             WHERE EndpointHash = %s
             """,
@@ -363,14 +426,14 @@ class NotifyRepository:
             """
             UPDATE tblPushSubscriptions
             SET NotifyScheduled = %s, NotifyChanged = %s, NotifyCancelled = %s,
-                NotifyLive = %s, NotifyEnded = %s, NotifyScore = %s, NotifyReminder = %s,
+                NotifyLive = %s, NotifyEnded = %s, NotifyScore = %s, NotifyReminder = %s, NotifySyncProblem = %s,
                 SeasonId = %s, TeamId = %s, UpdatedAt = SYSUTCDATETIME()
             WHERE EndpointHash = %s AND Void = 0
             """,
             (
                 int(merged["notify_scheduled"]), int(merged["notify_changed"]), int(merged["notify_cancelled"]),
                 int(merged["notify_live"]), int(merged["notify_ended"]), int(merged["notify_score"]),
-                int(merged["notify_reminder"]),
+                int(merged["notify_reminder"]), int(merged.get("notify_sync_problem", True)),
                 merged.get("season_id"), merged.get("team_id"), endpoint_hash(endpoint),
             ),
         )
@@ -389,6 +452,41 @@ class NotifyRepository:
         )
         self.db.commit()
         return cursor.rowcount > 0
+
+    def note_push_success(self, subscription_id: int) -> None:
+        # Only consecutive failures can void a device, so one accepted message clears the count.
+        cursor = self.db.cursor()
+        cursor.execute(
+            "UPDATE tblPushSubscriptions SET LastSuccessAt = SYSUTCDATETIME(), FailureCount = 0 WHERE Id = %s",
+            (subscription_id,),
+        )
+        self.db.commit()
+
+    def enqueue_sync_problem(self, connection_id: int, admin_id: int, provider: str) -> int | None:
+        """Queue one push to the admin's own devices: this connection needs them to connect again.
+
+        The outbox row needs a match id, and this notice has none, so it uses 0. Nothing reads a
+        match for it. Its key is per connection, so a retry or a second revoke queues nothing new.
+        """
+        key = f"connection:{int(connection_id)}:sync_problem"
+        payload = json.dumps(
+            {"event": "sync_problem", "connection_id": int(connection_id), "admin_id": int(admin_id), "provider": provider},
+            separators=(",", ":"),
+        )
+        cursor = self.db.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO tblNotificationOutbox (MatchId, EventType, IdempotencyKey, Payload)
+                SELECT 0, %s, %s, %s
+                WHERE NOT EXISTS (SELECT 1 FROM tblNotificationOutbox WHERE IdempotencyKey = %s)
+                """,
+                ("sync_problem", key, payload, key),
+            )
+        except pyodbc.IntegrityError:
+            return None
+        self.db.commit()
+        return cursor.lastrowid
 
     def note_push_failure(self, subscription_id: int, gone: bool) -> None:
         cursor = self.db.cursor()
@@ -414,8 +512,9 @@ class NotifyRepository:
         cursor = self.db.cursor(dictionary=True)
         cursor.execute(
             """
-            SELECT Id, Endpoint, P256dh, AuthSecret, AdminId, SeasonId, TeamId, Void, FailureCount,
-                   NotifyScheduled, NotifyChanged, NotifyCancelled, NotifyLive, NotifyEnded, NotifyScore, NotifyReminder
+            SELECT Id, Endpoint, P256dh, AuthSecret, AdminId, SeasonId, TeamId, Void, FailureCount, LastSuccessAt,
+                   NotifyScheduled, NotifyChanged, NotifyCancelled, NotifyLive, NotifyEnded, NotifyScore, NotifyReminder,
+                   NotifySyncProblem
             FROM tblPushSubscriptions
             WHERE Void = 0
             """
@@ -509,7 +608,7 @@ class NotifyRepository:
                 """,
                 (season_id, team_id, team_id),
             )
-        return [self._row_notice(row) for row in cursor.fetchall()]
+        return self.attach_rosters([self._row_notice(row) for row in cursor.fetchall()])
 
     def due_reminders(self, day: date) -> list[dict]:
         cursor = self.db.cursor(dictionary=True)
@@ -573,6 +672,68 @@ class NotifyRepository:
             for row in cursor.fetchall()
         ]
 
+    def withdrawn_connection_ids(self, match_id: int) -> set[int]:
+        """Connections the admin removed this match from. Ordinary calendar writes skip them."""
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT ConnectionId FROM tblCalendarEventMaps WHERE MatchId = %s AND Withdrawn = 1",
+            (int(match_id),),
+        )
+        return {int(row["ConnectionId"]) for row in cursor.fetchall()}
+
+    def set_withdrawn(self, connection_id: int, match_id: int, withdrawn: bool) -> None:
+        """Mark one match withdrawn (or active again) for one connection.
+
+        The content hash is cleared on both changes, so a restore always writes the event
+        and a withdrawal never matches a stored hash.
+        """
+        cursor = self.db.cursor()
+        cursor.execute(
+            """
+            UPDATE tblCalendarEventMaps
+            SET Withdrawn = %s, ContentHash = '', UpdatedAt = SYSUTCDATETIME()
+            WHERE ConnectionId = %s AND MatchId = %s
+            """,
+            (1 if withdrawn else 0, int(connection_id), int(match_id)),
+        )
+        if cursor.rowcount == 0 and withdrawn:
+            cursor.execute(
+                """
+                INSERT INTO tblCalendarEventMaps (ConnectionId, MatchId, ExternalEventId, ContentHash, Withdrawn)
+                VALUES (%s, %s, '', '', 1)
+                """,
+                (int(connection_id), int(match_id)),
+            )
+        self.db.commit()
+
+    def connection_match_states(self, admin_id: int, match_id: int) -> list[dict]:
+        """For each of the admin's live connections: whether this match is on that calendar."""
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT c.Id, c.Provider, c.Status, m.Withdrawn, m.ContentHash, m.ExternalEventId
+            FROM tblCalendarConnections c
+            LEFT JOIN tblCalendarEventMaps m ON m.ConnectionId = c.Id AND m.MatchId = %s
+            WHERE c.AdminId = %s AND c.Void = 0
+            ORDER BY c.Provider
+            """,
+            (int(match_id), int(admin_id)),
+        )
+        states = []
+        for row in cursor.fetchall():
+            removed = bool(row["Withdrawn"]) if row["Withdrawn"] is not None else False
+            synced = bool((row["ContentHash"] or "").strip()) and bool((row["ExternalEventId"] or "").strip())
+            states.append(
+                {
+                    "id": int(row["Id"]),
+                    "provider": row["Provider"],
+                    "status": row["Status"],
+                    "removed": removed,
+                    "on_calendar": synced and not removed,
+                }
+            )
+        return states
+
     def connection_for_admin(self, connection_id: int, admin_id: int) -> dict | None:
         """One of the admin's own connections, with its encrypted token. Never another admin's."""
         cursor = self.db.cursor(dictionary=True)
@@ -610,6 +771,12 @@ class NotifyRepository:
         return changed
 
     def save_connection(self, admin_id: int, provider: str, refresh_token: str, calendar_id: str) -> int | None:
+        lookup = self.db.cursor(dictionary=True)
+        lookup.execute(
+            "SELECT TOP 1 Id FROM tblCalendarConnections WHERE AdminId = %s AND Provider = %s ORDER BY Id DESC",
+            (admin_id, provider),
+        )
+        previous = lookup.fetchone()
         cursor = self.db.cursor()
         cursor.execute(
             """
@@ -627,6 +794,19 @@ class NotifyRepository:
             (admin_id, provider, calendar_id, refresh_token),
         )
         connection_id = cursor.lastrowid
+        if previous and connection_id is not None:
+            # Reconnecting the same provider keeps the events already written and the matches the
+            # admin removed. The hash is cleared, so the backfill rewrites each mapped event in place
+            # rather than posting a second copy. A different account answers 404 and gets a new event.
+            cursor.execute(
+                """
+                INSERT INTO tblCalendarEventMaps (ConnectionId, MatchId, ExternalEventId, ContentHash, Withdrawn)
+                SELECT %s, MatchId, ExternalEventId, '', Withdrawn
+                FROM tblCalendarEventMaps
+                WHERE ConnectionId = %s
+                """,
+                (int(connection_id), int(previous["Id"])),
+            )
         self.db.commit()
         return connection_id
 
@@ -672,6 +852,69 @@ class NotifyRepository:
         )
         return [self._row_notice(row) for row in cursor.fetchall()]
 
+    def entity_name(self, kind: str, entity_id: int) -> str | None:
+        table = {"team": "tblTeams", "season": "tblSeasons"}[kind]
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(f"SELECT Name FROM dbo.{table} WHERE Id = %s", (int(entity_id),))
+        row = cursor.fetchone()
+        return row["Name"] if row else None
+
+    def touch_matches_for_rename(self, team_id: int | None = None, season_id: int | None = None) -> list[dict]:
+        """Bump UpdatedAt on every live match that shows a renamed team or season.
+
+        The feed's SEQUENCE follows UpdatedAt, so this is what makes subscribed calendars
+        pick up the new name. Returns the matches as notice rows, for one calendar write each.
+        """
+        if (team_id is None) == (season_id is None):
+            raise ValueError("pass exactly one of team_id or season_id")
+        if team_id is not None:
+            where = "m.Void = 0 AND (m.Team1 = %s OR m.Team2 = %s)"
+            params = (int(team_id), int(team_id))
+        else:
+            where = "m.Void = 0 AND m.SeasonId = %s"
+            params = (int(season_id),)
+        return self._touch_notices(where, params)
+
+    def touch_matches_for_player(self, player_id: int, season_id: int | None = None) -> list[dict]:
+        """Bump UpdatedAt on every live match the player's name appears in, in one season or in all.
+
+        A match counts when the player is on a roster of a team in that match. Removed roster rows
+        still count, so the match is touched after a player leaves a team as well. The name is
+        read again at write time, so a touch never carries stale text.
+        """
+        where = (
+            "m.Void = 0 AND EXISTS (SELECT 1 FROM tblPlayersSeasonsTeams pst "
+            "WHERE pst.PlayerId = %s AND pst.SeasonId = m.SeasonId AND (pst.TeamId = m.Team1 OR pst.TeamId = m.Team2))"
+        )
+        params: tuple = (int(player_id),)
+        if season_id is not None:
+            where += " AND m.SeasonId = %s"
+            params = (int(player_id), int(season_id))
+        return self._touch_notices(where, params)
+
+    def _touch_notices(self, where: str, params: tuple) -> list[dict]:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(f"UPDATE m SET UpdatedAt = SYSUTCDATETIME() FROM tblMatches AS m WHERE {where}", params)
+        cursor.execute(
+            f"""
+            SELECT
+                m.Id, m.SeasonId, s.Name AS SeasonName,
+                m.Team1, m.Team2, t1.Name AS Team1Name, t2.Name AS Team2Name,
+                m.ScheduledDate, m.Status, m.Void, m.Category, m.Outcome, m.NetPoints,
+                m.UpdatedAt, m.StartedAt, m.CreatedAt
+            FROM tblMatches m
+            JOIN tblSeasons s ON s.Id = m.SeasonId
+            LEFT JOIN tblTeams t1 ON t1.Id = m.Team1
+            LEFT JOIN tblTeams t2 ON t2.Id = m.Team2
+            WHERE {where}
+            ORDER BY m.ScheduledDate, m.[Order], m.Id
+            """,
+            params,
+        )
+        rows = cursor.fetchall()
+        self.db.commit()
+        return [self._row_notice(row) for row in rows]
+
     def event_map(self, connection_id: int, match_id: int) -> dict | None:
         cursor = self.db.cursor(dictionary=True)
         cursor.execute(
@@ -685,7 +928,8 @@ class NotifyRepository:
         row = cursor.fetchone()
         if not row:
             return None
-        return {"external_event_id": row["ExternalEventId"], "content_hash": row["ContentHash"]}
+        # ContentHash is CHAR(64), so an empty hash comes back padded with spaces.
+        return {"external_event_id": row["ExternalEventId"], "content_hash": (row["ContentHash"] or "").strip()}
 
     def save_event_map(self, connection_id: int, match_id: int, external_event_id: str, content_hash: str) -> None:
         cursor = self.db.cursor()
@@ -750,6 +994,7 @@ def _subscription(row: dict) -> dict:
         "team_id": int(row["TeamId"]) if row["TeamId"] is not None else None,
         "void": bool(row["Void"]),
         "failure_count": int(row["FailureCount"] or 0),
+        "last_success_at": row.get("LastSuccessAt"),
         "notify_scheduled": bool(row["NotifyScheduled"]),
         "notify_changed": bool(row["NotifyChanged"]),
         "notify_cancelled": bool(row["NotifyCancelled"]),
@@ -757,6 +1002,7 @@ def _subscription(row: dict) -> dict:
         "notify_ended": bool(row["NotifyEnded"]),
         "notify_score": bool(row["NotifyScore"]),
         "notify_reminder": bool(row["NotifyReminder"]),
+        "notify_sync_problem": bool(row.get("NotifySyncProblem", True)),
     }
 
 

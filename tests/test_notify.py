@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from datetime import date, datetime, timezone
@@ -266,6 +267,9 @@ class WorkerTests(unittest.TestCase):
 
             def active_subscriptions(self):
                 return []
+
+            def withdrawn_connection_ids(self, match_id):
+                return set()
 
             def active_connections(self):
                 return [{
@@ -540,6 +544,9 @@ class ProviderOutcomeWorkerTests(unittest.TestCase):
             def active_subscriptions(self):
                 return []
 
+            def withdrawn_connection_ids(self, match_id):
+                return set()
+
             def active_connections(self):
                 return [connection]
 
@@ -551,6 +558,9 @@ class ProviderOutcomeWorkerTests(unittest.TestCase):
 
             def set_connection_status(self, connection_id, status):
                 events.append(("connection", connection_id, status))
+
+            def enqueue_sync_problem(self, connection_id, admin_id, provider):
+                events.append(("sync_problem", connection_id, provider))
 
             def mark_done(self, item_id):
                 events.append(("done", item_id))
@@ -579,6 +589,9 @@ class ProviderOutcomeWorkerTests(unittest.TestCase):
 
             def active_subscriptions(self):
                 return []
+
+            def withdrawn_connection_ids(self, match_id):
+                return set()
 
             def active_connections(self):
                 return [connection]
@@ -652,6 +665,9 @@ class DeliveryOrderingTests(unittest.TestCase):
                     "notify_reminder": True,
                 }]
 
+            def withdrawn_connection_ids(self, match_id):
+                return set()
+
             def active_connections(self):
                 return []
 
@@ -692,6 +708,9 @@ class DeliveryOrderingTests(unittest.TestCase):
 
             def active_subscriptions(self):
                 return []
+
+            def withdrawn_connection_ids(self, match_id):
+                return set()
 
             def active_connections(self):
                 return [connection]
@@ -912,6 +931,9 @@ class TelemetryTests(unittest.TestCase):
             def active_subscriptions(self):
                 return []
 
+            def withdrawn_connection_ids(self, match_id):
+                return set()
+
             def active_connections(self):
                 return [connection]
 
@@ -922,6 +944,9 @@ class TelemetryTests(unittest.TestCase):
                 pass
 
             def set_connection_status(self, connection_id, status):
+                pass
+
+            def enqueue_sync_problem(self, connection_id, admin_id, provider):
                 pass
 
             def mark_done(self, item_id):
@@ -1088,6 +1113,8 @@ class SyncStateTests(unittest.TestCase):
         self.assertEqual(sync_state("revoked", {"last_status": "sent"}), "reauthorization_required")
         self.assertEqual(sync_state("active", {"last_status": "failed", "queue_pending": True}), "sync_failed")
         self.assertEqual(sync_state("active", {"last_status": "sent", "queue_pending": True}), "update_pending")
+        self.assertEqual(sync_state("active", {"last_status": "sent", "in_flight": True, "queue_pending": True}), "syncing")
+        self.assertEqual(sync_state("active", {"last_status": "failed", "in_flight": True}), "sync_failed")
         self.assertEqual(sync_state("active", {"last_status": "sent", "queue_pending": False}), "synced")
         self.assertEqual(sync_state("active", {"last_status": "skipped"}), "synced")
         self.assertEqual(sync_state("active", None), "connected")
@@ -1111,6 +1138,9 @@ class RetrySafetyTests(unittest.TestCase):
                 return [{"id": 1, "endpoint": "https://push.example/1", "void": False},
                         {"id": 2, "endpoint": "https://push.example/2", "void": False}]
 
+            def withdrawn_connection_ids(self, match_id):
+                return set()
+
             def active_connections(self):
                 return []
 
@@ -1121,6 +1151,9 @@ class RetrySafetyTests(unittest.TestCase):
                 recorded.append((target, status))
 
             def mark_done(self, item_id):
+                pass
+
+            def note_push_success(self, subscription_id):
                 pass
 
         def fake_push(subscription, body, **kwargs):
@@ -1146,6 +1179,9 @@ class RetrySafetyTests(unittest.TestCase):
             def active_subscriptions(self):
                 return [{"id": 1, "endpoint": "https://push.example/secret-endpoint-path", "void": False}]
 
+            def withdrawn_connection_ids(self, match_id):
+                return set()
+
             def active_connections(self):
                 return []
 
@@ -1165,6 +1201,208 @@ class RetrySafetyTests(unittest.TestCase):
         self.assertEqual(recorded, ["unexpected: ValueError"])
 
 
+class SyncProblemTests(unittest.TestCase):
+    def _flags(self):
+        return _ready_flags()
+
+    def test_only_the_owning_admins_enabled_devices_hear_it_and_no_calendar_is_written(self):
+        from unittest import mock
+
+        recorded, done, pushed, sent = [], [], [], []
+
+        class Repo:
+            def match_notice(self, match_id):
+                return None
+
+            def active_subscriptions(self):
+                return [
+                    {"id": 1, "endpoint": "https://fcm.googleapis.com/1", "void": False, "admin_id": 7,
+                     "season_id": 3, "team_id": None, "notify_sync_problem": True},
+                    {"id": 2, "endpoint": "https://fcm.googleapis.com/2", "void": False, "admin_id": 7,
+                     "season_id": None, "team_id": None, "notify_sync_problem": False},
+                    {"id": 3, "endpoint": "https://fcm.googleapis.com/3", "void": False, "admin_id": 8,
+                     "season_id": None, "team_id": None, "notify_sync_problem": True},
+                    {"id": 4, "endpoint": "https://fcm.googleapis.com/4", "void": False, "admin_id": None,
+                     "season_id": None, "team_id": None, "notify_sync_problem": True},
+                ]
+
+            def active_connections(self):
+                return [{"id": 9, "admin_id": 7, "provider": "google", "calendar_id": "primary",
+                         "refresh_token": "x", "void": False}]
+
+            def withdrawn_connection_ids(self, match_id):
+                return set()
+
+            def sent_targets(self, outbox_id, channel):
+                return set()
+
+            def record_delivery(self, outbox_id, channel, target, status, detail):
+                recorded.append((channel, status))
+
+            def mark_done(self, item_id):
+                done.append(item_id)
+
+            def note_push_success(self, subscription_id):
+                pushed.append(subscription_id)
+
+        def fake_push(subscription, body, **kwargs):
+            sent.append((subscription["id"], body["title"], body["url"]))
+            return {"ok": True, "blocked": False, "gone": False, "reason": ""}
+
+        item = {"Id": 30, "MatchId": 0, "EventType": "sync_problem", "Attempts": 1,
+                "Payload": '{"event":"sync_problem","connection_id":9,"admin_id":7,"provider":"google"}'}
+        with mock.patch.object(worker_module, "send_web_push", side_effect=fake_push):
+            deliver_item(Repo(), item, self._flags(), post=None, request=None)
+
+        self.assertEqual([entry[0] for entry in sent], [1])
+        self.assertEqual(sent[0][1], "Calendar needs attention")
+        self.assertTrue(sent[0][2].endswith("/admin/settings"))
+        self.assertEqual(pushed, [1])
+        self.assertEqual(done, [30])
+        self.assertTrue(all(channel == "push" for channel, _ in recorded), recorded)
+
+    def test_a_revoked_calendar_queues_one_notice_for_its_admin(self):
+        from unittest import mock
+
+        from services.notify.providers import ReauthorizationRequired
+
+        queued, statuses, done = [], [], []
+
+        class Repo:
+            def match_notice(self, match_id):
+                return _match()
+
+            def active_subscriptions(self):
+                return []
+
+            def active_connections(self):
+                return [{"id": 9, "admin_id": 7, "provider": "google", "calendar_id": "primary",
+                         "refresh_token": "x", "void": False}]
+
+            def withdrawn_connection_ids(self, match_id):
+                return set()
+
+            def sent_targets(self, outbox_id, channel):
+                return set()
+
+            def set_connection_status(self, connection_id, status):
+                statuses.append((connection_id, status))
+
+            def enqueue_sync_problem(self, connection_id, admin_id, provider):
+                queued.append((connection_id, admin_id, provider))
+                return 1
+
+            def record_delivery(self, outbox_id, channel, target, status, detail):
+                pass
+
+            def mark_done(self, item_id):
+                done.append(item_id)
+
+        item = {"Id": 31, "MatchId": 12, "EventType": "scheduled", "Attempts": 1,
+                "Payload": '{"event":"scheduled","match":{"id":12},"before":null}'}
+        with mock.patch.object(worker_module, "_deliver_google", side_effect=ReauthorizationRequired(401)):
+            deliver_item(Repo(), item, self._flags(), post=None, request=None)
+
+        self.assertEqual(statuses, [(9, "revoked")])
+        self.assertEqual(queued, [(9, 7, "google")])
+        self.assertEqual(done, [31])
+
+    def test_a_failed_queue_does_not_stop_the_revoke_being_recorded(self):
+        from unittest import mock
+
+        from services.notify.providers import ReauthorizationRequired
+
+        statuses, done = [], []
+
+        class Repo:
+            def match_notice(self, match_id):
+                return _match()
+
+            def active_subscriptions(self):
+                return []
+
+            def active_connections(self):
+                return [{"id": 9, "admin_id": 7, "provider": "google", "calendar_id": "primary",
+                         "refresh_token": "x", "void": False}]
+
+            def withdrawn_connection_ids(self, match_id):
+                return set()
+
+            def sent_targets(self, outbox_id, channel):
+                return set()
+
+            def set_connection_status(self, connection_id, status):
+                statuses.append((connection_id, status))
+
+            def enqueue_sync_problem(self, connection_id, admin_id, provider):
+                raise RuntimeError("outbox unavailable")
+
+            def record_delivery(self, outbox_id, channel, target, status, detail):
+                pass
+
+            def mark_done(self, item_id):
+                done.append(item_id)
+
+        item = {"Id": 32, "MatchId": 12, "EventType": "scheduled", "Attempts": 1,
+                "Payload": '{"event":"scheduled","match":{"id":12},"before":null}'}
+        with mock.patch.object(worker_module, "_deliver_google", side_effect=ReauthorizationRequired(401)):
+            deliver_item(Repo(), item, self._flags(), post=None, request=None)
+        self.assertEqual(statuses, [(9, "revoked")])
+        self.assertEqual(done, [32])
+
+
+class TelemetryMeasureTests(unittest.TestCase):
+    def setUp(self):
+        from services.notify import telemetry
+
+        telemetry.reset()
+        self.addCleanup(telemetry.reset)
+
+    def test_a_measure_keeps_its_count_average_and_worst_case(self):
+        from services.notify import telemetry
+
+        telemetry.observe("outbox.age_at_done", 5)
+        telemetry.observe("outbox.age_at_done", 15)
+        telemetry.observe("outbox.age_at_done", -3)
+        self.assertEqual(telemetry.latency()["outbox.age_at_done"],
+                         {"count": 3, "average_seconds": 6.7, "max_seconds": 15.0})
+
+    def test_a_subscription_and_its_removal_are_counted_without_the_endpoint(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from routes import notify_routes
+        from schemas.notify_schema import PushSubscribeRequest, PushUnsubscribeRequest
+        from services.notify import telemetry
+
+        class Repo:
+            def __init__(self, db):
+                pass
+
+            def season_exists(self, season_id):
+                return True
+
+            def subscription_by_endpoint(self, endpoint):
+                return None
+
+            def save_subscription(self, row):
+                return {**row, "id": 1, "void": False}
+
+            def void_subscription(self, endpoint):
+                return True
+
+        flags = _flags(push_enabled=True, vapid_public_key="pub", vapid_private_key="priv", vapid_subject="mailto:a@b.c")
+        request = SimpleNamespace(headers={}, client=SimpleNamespace(host="203.0.113.10"))
+        body = PushSubscribeRequest(endpoint="https://fcm.googleapis.com/fcm/send/telemetry", p256dh="p", auth="a")
+        with mock.patch.object(notify_routes, "NotifyRepository", Repo), \
+                mock.patch.object(notify_routes, "_flags", return_value=flags):
+            notify_routes.subscribe(body, request, db=None, admin=None)
+            notify_routes.unsubscribe(PushUnsubscribeRequest(endpoint=body.endpoint), db=None)
+        counts = telemetry.snapshot()
+        self.assertEqual((counts.get("push.subscribed"), counts.get("push.unsubscribed")), (1, 1))
+        self.assertFalse(any("telemetry" in key for key in counts), counts)
+
+
 class SubscriptionRotationTests(unittest.TestCase):
     def test_a_rotated_endpoint_keeps_the_old_choices_and_retires_the_old_row(self):
         from types import SimpleNamespace
@@ -1175,10 +1413,10 @@ class SubscriptionRotationTests(unittest.TestCase):
 
         saved = []
         voided = []
-        old = {"id": 4, "endpoint": "https://push.example/old", "void": False, "admin_id": None,
+        old = {"id": 4, "endpoint": "https://fcm.googleapis.com/fcm/send/old", "void": False, "admin_id": None,
                "season_id": 3, "team_id": 2, "notify_scheduled": True, "notify_changed": False,
                "notify_cancelled": True, "notify_live": False, "notify_ended": True, "notify_score": False,
-               "notify_reminder": True}
+               "notify_reminder": True, "notify_sync_problem": True}
 
         class Repo:
             def __init__(self, db):
@@ -1196,15 +1434,15 @@ class SubscriptionRotationTests(unittest.TestCase):
                 return True
 
         flags = _flags(push_enabled=True, vapid_public_key="pub", vapid_private_key="priv", vapid_subject="mailto:a@b.c")
-        body = PushSubscribeRequest(endpoint="https://push.example/new", p256dh="p", auth="a",
-                                    replaces_endpoint="https://push.example/old")
+        body = PushSubscribeRequest(endpoint="https://fcm.googleapis.com/fcm/send/new", p256dh="p", auth="a",
+                                    replaces_endpoint="https://fcm.googleapis.com/fcm/send/old")
         request = SimpleNamespace(headers={}, client=SimpleNamespace(host="203.0.113.9"))
         with mock.patch.object(notify_routes, "NotifyRepository", Repo), \
                 mock.patch.object(notify_routes, "_flags", return_value=flags):
             notify_routes.subscribe(body, request, db=None, admin=None)
-        self.assertEqual(saved[0]["endpoint"], "https://push.example/new")
+        self.assertEqual(saved[0]["endpoint"], "https://fcm.googleapis.com/fcm/send/new")
         self.assertEqual((saved[0]["team_id"], saved[0]["notify_live"], saved[0]["notify_score"]), (2, False, False))
-        self.assertEqual(voided, ["https://push.example/old"])
+        self.assertEqual(voided, ["https://fcm.googleapis.com/fcm/send/old"])
 
     def test_a_second_report_of_the_same_rotation_keeps_the_carried_over_choices(self):
         from types import SimpleNamespace
@@ -1213,10 +1451,10 @@ class SubscriptionRotationTests(unittest.TestCase):
         from routes import notify_routes
         from schemas.notify_schema import PushSubscribeRequest
 
-        rotated = {"id": 5, "endpoint": "https://push.example/new", "void": False, "admin_id": None,
+        rotated = {"id": 5, "endpoint": "https://fcm.googleapis.com/fcm/send/new", "void": False, "admin_id": None,
                    "season_id": 3, "team_id": 2, "notify_scheduled": True, "notify_changed": False,
                    "notify_cancelled": True, "notify_live": False, "notify_ended": True, "notify_score": False,
-                   "notify_reminder": True}
+                   "notify_reminder": True, "notify_sync_problem": True}
 
         class Repo:
             def __init__(self, db):
@@ -1231,8 +1469,8 @@ class SubscriptionRotationTests(unittest.TestCase):
                 raise AssertionError("the rotated row must not be overwritten")
 
         flags = _flags(push_enabled=True, vapid_public_key="pub", vapid_private_key="priv", vapid_subject="mailto:a@b.c")
-        body = PushSubscribeRequest(endpoint="https://push.example/new", p256dh="p", auth="a",
-                                    replaces_endpoint="https://push.example/old", notify_live=True)
+        body = PushSubscribeRequest(endpoint="https://fcm.googleapis.com/fcm/send/new", p256dh="p", auth="a",
+                                    replaces_endpoint="https://fcm.googleapis.com/fcm/send/old", notify_live=True)
         request = SimpleNamespace(headers={}, client=SimpleNamespace(host="203.0.113.9"))
         with mock.patch.object(notify_routes, "NotifyRepository", Repo), \
                 mock.patch.object(notify_routes, "_flags", return_value=flags):
@@ -1244,10 +1482,50 @@ class SubscriptionRotationTests(unittest.TestCase):
 
         from routes.notify_routes import _client_key
 
-        behind_proxy = SimpleNamespace(headers={"x-forwarded-for": "198.51.100.7, 10.0.0.1"}, client=SimpleNamespace(host="10.0.0.1"))
+        from unittest import mock
+
+        behind_proxy = SimpleNamespace(headers={"x-forwarded-for": "198.51.100.7"}, client=SimpleNamespace(host="10.0.0.1"))
         direct = SimpleNamespace(headers={}, client=SimpleNamespace(host="203.0.113.9"))
         self.assertEqual(_client_key(behind_proxy), "198.51.100.7")
         self.assertEqual(_client_key(direct), "203.0.113.9")
+        # A visitor who sends their own header cannot pick the key: the proxy's entry is last.
+        spoofed = SimpleNamespace(headers={"x-forwarded-for": "1.2.3.4, 198.51.100.7"}, client=SimpleNamespace(host="10.0.0.1"))
+        self.assertEqual(_client_key(spoofed), "198.51.100.7")
+        two_proxies = SimpleNamespace(headers={"x-forwarded-for": "1.2.3.4, 198.51.100.7, 10.0.0.2"}, client=SimpleNamespace(host="10.0.0.1"))
+        with mock.patch.dict("os.environ", {"CPL_TRUSTED_PROXY_HOPS": "2"}):
+            self.assertEqual(_client_key(two_proxies), "198.51.100.7")
+
+
+class PushEndpointTests(unittest.TestCase):
+    def test_only_the_browser_push_services_are_accepted(self):
+        from routes.notify_routes import _https_endpoint
+
+        for endpoint in (
+            "https://fcm.googleapis.com/fcm/send/abc",
+            "https://updates.push.services.mozilla.com/wpush/v2/abc",
+            "https://web.push.apple.com/QGcx",
+            "https://wns2-par02p.notify.windows.com/w/?token=abc",
+        ):
+            with self.subTest(endpoint=endpoint):
+                self.assertEqual(_https_endpoint(endpoint), endpoint)
+
+    def test_any_other_host_is_refused_before_the_server_calls_it(self):
+        from fastapi import HTTPException
+
+        from routes.notify_routes import _https_endpoint
+
+        for endpoint in (
+            "https://evil.example/push",
+            "https://fcm.googleapis.com.evil.example/fcm/send/abc",
+            "https://fcm.googleapis.com@evil.example/fcm/send/abc",
+            "https://notfcm.googleapis.com.example/x",
+            "https://10.0.0.5/admin",
+            "https://169.254.169.254/latest/meta-data",
+            "http://fcm.googleapis.com/fcm/send/abc",
+        ):
+            with self.subTest(endpoint=endpoint), self.assertRaises(HTTPException) as caught:
+                _https_endpoint(endpoint)
+            self.assertEqual(caught.exception.status_code, 400)
 
 
 class EndpointKeyTests(unittest.TestCase):
@@ -1444,13 +1722,16 @@ class ScheduleRebuildTests(unittest.TestCase):
             def active_subscriptions(self):
                 return [{"id": 1, "void": False}]
 
+            def withdrawn_connection_ids(self, match_id):
+                return set()
+
             def active_connections(self):
                 return [{"id": 7, "provider": "google"}]
 
             def mark_done(self, item_id):
                 pass
 
-        def fake_google(repository, item, match, connection, flags, post, request):
+        def fake_google(repository, item, match, connection, flags, post, request, withdraw=False, **kwargs):
             written.append((match["id"], match["void"]))
 
         payload = '{"event":"calendar","match":{"id":10,"season_id":3,"void":true},"before":null}'
@@ -1472,13 +1753,16 @@ class ScheduleRebuildTests(unittest.TestCase):
             def active_subscriptions(self):
                 return []
 
+            def withdrawn_connection_ids(self, match_id):
+                return set()
+
             def active_connections(self):
                 return [{"id": 7, "provider": "google"}]
 
             def mark_done(self, item_id):
                 pass
 
-        def fake_google(repository, item, match, connection, flags, post, request):
+        def fake_google(repository, item, match, connection, flags, post, request, withdraw=False, **kwargs):
             written.append(match["void"])
 
         class Devices(Repo):
@@ -1588,6 +1872,372 @@ class MatchRouteWiringTests(unittest.TestCase):
             response = match_routes.create(None, db=None, controller=self._controller())
         self.assertTrue(response.success)
         self.assertEqual(response.data.id, 12)
+
+
+class RenameTests(unittest.TestCase):
+    """A team or season rename rewrites its live matches in connected calendars, and alerts no device."""
+
+    def _fake_repository(self, matches, calls):
+        class Repository:
+            def __init__(self, db):
+                pass
+
+            def touch_matches_for_rename(self, team_id=None, season_id=None):
+                calls.append(("touch", team_id, season_id))
+                return matches
+
+            def enqueue(self, match, event, before=None, key=None, connection_id=None, existing_only=False):
+                calls.append(("enqueue", int(match["id"]), event, key, existing_only))
+                return len(calls)
+
+        return Repository
+
+    def test_each_live_match_gets_one_calendar_only_write(self):
+        from unittest import mock
+
+        from services.notify import enqueue as enqueue_module
+        from services.notify.events import CALENDAR
+
+        calls = []
+        matches = [_match(id=7, updated_at=datetime(2026, 11, 18, 10, 0, 0, 1)),
+                   _match(id=8, updated_at=datetime(2026, 11, 18, 10, 0, 0, 2))]
+        with mock.patch.object(enqueue_module, "NotifyRepository", self._fake_repository(matches, calls)), \
+                mock.patch.object(enqueue_module, "load_flags", return_value=_ready_flags()):
+            queued = enqueue_module.publish_rename(None, team_id=3)
+        self.assertEqual(queued, 2)
+        self.assertEqual(calls[0], ("touch", 3, None))
+        enqueued = [call for call in calls if call[0] == "enqueue"]
+        self.assertEqual([call[1] for call in enqueued], [7, 8])
+        self.assertTrue(all(call[2] == CALENDAR for call in enqueued))
+        self.assertEqual(len({call[3] for call in enqueued}), 2)
+        self.assertTrue(all(":rename:" in call[3] for call in enqueued))
+        # Only events already on a calendar are rewritten; a rename never adds old matches.
+        self.assertTrue(all(call[4] is True for call in enqueued))
+
+    def test_a_season_rename_passes_the_season_not_the_team(self):
+        from unittest import mock
+
+        from services.notify import enqueue as enqueue_module
+
+        calls = []
+        with mock.patch.object(enqueue_module, "NotifyRepository", self._fake_repository([], calls)), \
+                mock.patch.object(enqueue_module, "load_flags", return_value=_ready_flags()):
+            enqueue_module.publish_rename(None, season_id=4)
+        self.assertEqual(calls, [("touch", None, 4)])
+
+    def test_flags_off_reads_and_writes_nothing(self):
+        from unittest import mock
+
+        from services.notify import enqueue as enqueue_module
+
+        off = _ready_flags(push_enabled=False, google_enabled=False, microsoft_enabled=False)
+        with mock.patch.object(enqueue_module, "load_flags", return_value=off), \
+                mock.patch.object(enqueue_module, "NotifyRepository", side_effect=AssertionError("no repository")):
+            self.assertIsNone(enqueue_module.read_name(None, "team", 3))
+            self.assertEqual(enqueue_module.publish_rename(None, team_id=3), 0)
+
+    def test_a_failing_queue_does_not_raise(self):
+        from unittest import mock
+
+        from services.notify import enqueue as enqueue_module
+
+        class Broken:
+            def __init__(self, db):
+                pass
+
+            def touch_matches_for_rename(self, team_id=None, season_id=None):
+                raise RuntimeError("Invalid object name 'tblNotificationOutbox'")
+
+        with mock.patch.object(enqueue_module, "NotifyRepository", Broken), \
+                mock.patch.object(enqueue_module, "load_flags", return_value=_ready_flags()):
+            self.assertEqual(enqueue_module.publish_rename(None, team_id=3), 0)
+
+    def test_team_route_publishes_only_when_the_name_changes(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from routes import team_routes
+
+        class Controller:
+            def __init__(self, name):
+                self.name = name
+
+            def update(self, team_id, request):
+                return SimpleNamespace(id=team_id, name=self.name)
+
+        for previous, new_name, expected in (("Old", "New", [3]), ("Same", "Same", [])):
+            published = []
+            with mock.patch.object(team_routes, "read_name", return_value=previous), \
+                    mock.patch.object(team_routes, "publish_rename",
+                                      side_effect=lambda db, team_id=None, season_id=None: published.append(team_id)):
+                team_routes.update(3, SimpleNamespace(name=new_name), db=None, controller=Controller(new_name))
+            self.assertEqual(published, expected)
+
+    def test_season_route_publishes_only_when_the_name_changes(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from routes import season_routes
+
+        class Controller:
+            def __init__(self, db):
+                pass
+
+            def update(self, season_id, request):
+                return SimpleNamespace(id=season_id, name="Season 4 Renamed")
+
+        published = []
+        with mock.patch.object(season_routes, "SeasonController", Controller), \
+                mock.patch.object(season_routes, "read_name", return_value="Season 4"), \
+                mock.patch.object(season_routes, "publish_rename",
+                                  side_effect=lambda db, team_id=None, season_id=None: published.append(season_id)):
+            season_routes.update_season(4, SimpleNamespace(name="Season 4 Renamed"), db=None)
+        self.assertEqual(published, [4])
+
+
+class WithdrawTests(unittest.TestCase):
+    """An admin removes one match from one connected calendar, and adds it back."""
+
+    @staticmethod
+    def _google(**overrides):
+        from cryptography.fernet import Fernet
+
+        flags = _ready_flags(push_enabled=True, google_enabled=True, microsoft_enabled=True,
+                             token_key=Fernet.generate_key().decode("ascii"))
+        connection = {"id": 7, "provider": "google", "void": False,
+                      "refresh_token": encrypt_secret(flags.token_key, "refresh")}
+        connection.update(overrides)
+        return flags, connection
+
+    @staticmethod
+    def _item(event="withdraw"):
+        return {"Id": 9, "MatchId": 12, "EventType": event, "Attempts": 1,
+                "Payload": json.dumps({"event": event, "match": {"id": 12}, "before": None, "connection_id": 7})}
+
+    def test_the_plan_for_a_withdrawal_names_one_connection_and_never_pushes(self):
+        from services.notify.delivery import delivery_plan
+        from services.notify.events import WITHDRAW
+
+        connections = [{"id": 7, "provider": "google"}, {"id": 8, "provider": "google"}]
+        subscriptions = [{"id": 5, "void": False}]
+        plan = delivery_plan(WITHDRAW, _match(), subscriptions, connections, _ready_flags(), only_connection=8)
+        sends = [action for action in plan if action["status"] == "send"]
+        self.assertEqual([(action["channel"], action["target"]) for action in sends], [("google", 8)])
+        self.assertFalse([action for action in plan if action["channel"] == "push"])
+
+    def test_an_ordinary_change_does_not_write_a_withdrawn_calendar(self):
+        flags, connection = self._google()
+        calls = []
+
+        class Repo:
+            def match_notice(self, match_id):
+                return _match()
+
+            def active_subscriptions(self):
+                return []
+
+            def withdrawn_connection_ids(self, match_id):
+                return {7}
+
+            def active_connections(self):
+                return [connection]
+
+            def record_delivery(self, *args):
+                calls.append(("delivery", args))
+
+            def mark_done(self, item_id):
+                calls.append(("done", item_id))
+
+        deliver_item(Repo(), self._item("scheduled"), flags,
+                     post=lambda *a, **k: _Response(200, {"access_token": "a"}),
+                     request=lambda *a, **k: calls.append(("request", a)))
+        # The withdrawn calendar is never written: no provider request, and the notice still completes.
+        self.assertNotIn("request", [call[0] for call in calls])
+        self.assertIn(("done", 9), calls)
+
+    def test_withdrawing_deletes_only_the_mapped_google_event_and_records_it(self):
+        from services.notify.providers import GOOGLE_EVENTS
+
+        flags, connection = self._google()
+        events = []
+        requests = []
+
+        class Repo:
+            def match_notice(self, match_id):
+                return _match()
+
+            def active_subscriptions(self):
+                return []
+
+            def withdrawn_connection_ids(self, match_id):
+                return {7}  # set by the withdraw request before this notice was queued
+
+            def active_connections(self):
+                return [connection]
+
+            def event_map(self, connection_id, match_id):
+                return {"external_event_id": "cplmatch0000000012", "content_hash": ""}
+
+            def record_delivery(self, outbox_id, channel, target, status, detail):
+                events.append((channel, target, status, detail))
+
+            def mark_done(self, item_id):
+                events.append(("done", item_id))
+
+            def save_event_map(self, *args):
+                raise AssertionError("a withdrawal keeps the map as it is")
+
+        def request(method, url, json=None, headers=None):
+            requests.append((method, url))
+            return _Response(204, {})
+
+        deliver_item(Repo(), self._item(), flags, post=lambda *a, **k: _Response(200, {"access_token": "a"}), request=request)
+        self.assertEqual(requests, [("DELETE", f"{GOOGLE_EVENTS}/cplmatch0000000012")])
+        self.assertIn(("google", "7", "sent", "withdrawn"), events)
+        self.assertIn(("done", 9), events)
+
+    def test_withdrawing_a_match_that_was_never_written_is_a_no_op(self):
+        flags, connection = self._google()
+        events = []
+
+        class Repo:
+            def match_notice(self, match_id):
+                return _match()
+
+            def active_subscriptions(self):
+                return []
+
+            def withdrawn_connection_ids(self, match_id):
+                return {7}  # set by the withdraw request before this notice was queued
+
+            def active_connections(self):
+                return [connection]
+
+            def event_map(self, connection_id, match_id):
+                return None
+
+            def record_delivery(self, outbox_id, channel, target, status, detail):
+                events.append((channel, status, detail))
+
+            def mark_done(self, item_id):
+                events.append(("done", item_id))
+
+        deliver_item(Repo(), self._item(), flags, post=lambda *a, **k: _Response(200, {"access_token": "a"}),
+                     request=lambda *a, **k: self.fail("nothing to delete"))
+        self.assertIn(("google", "skipped", "nothing to remove"), events)
+
+    def test_an_event_already_gone_counts_as_removed(self):
+        from services.notify.providers import delete_google_event, delete_microsoft_event
+
+        for status in (404, 410):
+            provider = _ScriptedProvider((status, {}))
+            delete_google_event("token", "cplmatch0000000012", provider)
+            self.assertEqual(provider.methods, ["DELETE"])
+        provider = _ScriptedProvider((404, {}))
+        delete_microsoft_event("token", "AAMkAD-1", provider)
+        self.assertEqual(provider.methods, ["DELETE"])
+
+    def test_a_rate_limited_delete_is_retried_and_never_reported_as_removed(self):
+        from services.notify.providers import ProviderRateLimited, delete_google_event
+
+        provider = _ScriptedProvider((429, {}))
+        with self.assertRaises(ProviderRateLimited):
+            delete_google_event("token", "cplmatch0000000012", provider)
+
+    def test_a_withdrawn_microsoft_event_is_deleted_by_its_graph_id(self):
+        from services.notify.providers import MICROSOFT_EVENTS
+
+        flags = _ready_flags(push_enabled=False, google_enabled=False, microsoft_enabled=True,
+                             microsoft_client_id="id", microsoft_client_secret="secret",
+                             oauth_redirect_base="https://api.example", token_key=_ready_flags().token_key)
+        connection = {"id": 7, "provider": "microsoft", "void": False,
+                      "refresh_token": encrypt_secret(flags.token_key, "refresh")}
+        requests = []
+
+        class Repo:
+            def match_notice(self, match_id):
+                return _match()
+
+            def active_subscriptions(self):
+                return []
+
+            def withdrawn_connection_ids(self, match_id):
+                return {7}  # set by the withdraw request before this notice was queued
+
+            def active_connections(self):
+                return [connection]
+
+            def event_map(self, connection_id, match_id):
+                return {"external_event_id": "AAMkAD-1", "content_hash": ""}
+
+            def record_delivery(self, *args):
+                pass
+
+            def mark_done(self, item_id):
+                requests.append(("done", item_id))
+
+        def request(method, url, json=None, headers=None):
+            requests.append((method, url))
+            return _Response(204, {})
+
+        deliver_item(Repo(), self._item(), flags, post=lambda *a, **k: _Response(200, {"access_token": "a"}), request=request)
+        self.assertIn(("DELETE", f"{MICROSOFT_EVENTS}/AAMkAD-1"), requests)
+
+    def test_the_route_checks_ownership_status_and_provider_before_changing_anything(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from fastapi import HTTPException
+
+        from routes import notify_routes
+
+        calls = []
+        rows = {"owned": {"id": 7, "provider": "google", "status": "active"},
+                "revoked": {"id": 8, "provider": "google", "status": "revoked"}}
+
+        class Repo:
+            def __init__(self, db):
+                pass
+
+            def connection_for_admin(self, connection_id, admin_id):
+                return rows.get({7: "owned", 8: "revoked"}.get(connection_id)) if admin_id == 1 else None
+
+            def match_notice(self, match_id):
+                return _match(id=match_id)
+
+            def set_withdrawn(self, connection_id, match_id, withdrawn):
+                calls.append(("set", connection_id, match_id, withdrawn))
+
+            def enqueue(self, match, event, key=None, connection_id=None):
+                calls.append(("enqueue", event, connection_id, bool(key)))
+                return 1
+
+        admin = SimpleNamespace(id=1)
+        with mock.patch.object(notify_routes, "NotifyRepository", Repo), \
+                mock.patch.object(notify_routes, "_flags", return_value=_ready_flags(google_enabled=True)):
+            response = notify_routes.withdraw_match(7, 12, admin=admin, db=None)
+            self.assertTrue(response.success)
+            self.assertEqual(calls, [("set", 7, 12, True), ("enqueue", "withdraw", 7, True)])
+
+            calls.clear()
+            restored = notify_routes.restore_match(7, 12, admin=admin, db=None)
+            self.assertFalse(restored.data["removed"])
+            self.assertEqual(calls, [("set", 7, 12, False), ("enqueue", "sync", 7, True)])
+
+            for connection_id, admin_id, status in ((7, 2, 404), (8, 1, 409)):
+                calls.clear()
+                with self.assertRaises(HTTPException) as raised:
+                    notify_routes.withdraw_match(connection_id, 12, admin=SimpleNamespace(id=admin_id), db=None)
+                self.assertEqual(raised.exception.status_code, status)
+                self.assertEqual(calls, [])
+
+        calls.clear()
+        with mock.patch.object(notify_routes, "NotifyRepository", Repo), \
+                mock.patch.object(notify_routes, "_flags", return_value=_ready_flags(google_enabled=False)):
+            with self.assertRaises(HTTPException) as raised:
+                notify_routes.withdraw_match(7, 12, admin=admin, db=None)
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(calls, [])
 
 
 class PkceTests(unittest.TestCase):

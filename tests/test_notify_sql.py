@@ -76,6 +76,141 @@ class OutboxSqlTests(unittest.TestCase):
         self.db.commit()
         return match_id
 
+    def test_one_google_event_follows_a_match_from_schedule_to_final_result_and_cancel(self):
+        """The whole path on a real database: match write, outbox, worker, and a fake Google API.
+
+        Scenarios B to E in the goal, end to end. Only the provider is faked.
+        """
+        from unittest import mock
+
+        from cryptography.fernet import Fernet
+
+        from services.notify import enqueue as enqueue_module
+        from services.notify import worker as worker_module
+        from services.notify.events import LIVE
+        from services.notify.flags import load_flags
+        from services.notify.providers import google_event_id
+        from services.notify.security import encrypt_secret
+
+        key = Fernet.generate_key().decode("ascii")
+        flags = load_flags({
+            "CPL_GOOGLE_CALENDAR_ENABLED": "true",
+            "CPL_GOOGLE_CALENDAR_CLIENT_ID": "client-id",
+            "CPL_GOOGLE_CALENDAR_CLIENT_SECRET": "client-secret",
+            "CPL_OAUTH_REDIRECT_BASE": "https://api.example",
+            "CPL_CALENDAR_TOKEN_KEY": key,
+            "CPL_CALENDAR_LIVE_UPDATES_ENABLED": "true",
+        })
+        events: dict[str, dict] = {}
+        calls: list[tuple[str, str]] = []
+
+        class Response:
+            def __init__(self, status_code, body=None):
+                self.status_code = status_code
+                self._body = body or {}
+
+            def json(self):
+                return self._body
+
+        def post(url, data=None, headers=None):
+            return Response(200, {"access_token": "access-token-for-test"})
+
+        def request(method, url, json=None, headers=None):
+            event_id = json["id"] if method == "POST" else url.rsplit("/", 1)[-1]
+            calls.append((method, event_id))
+            if method == "PUT":
+                if event_id not in events:
+                    return Response(404)
+                events[event_id] = json
+                return Response(200, {"id": event_id})
+            events[event_id] = json
+            return Response(200, {"id": event_id})
+
+        def deliver_pending() -> int:
+            cursor = self.db.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT Id, MatchId, EventType, Payload, Attempts FROM dbo.tblNotificationOutbox "
+                "WHERE MatchId = %s AND Status = 'pending' ORDER BY Id",
+                (self.match_id,),
+            )
+            rows = cursor.fetchall()
+            for row in rows:
+                worker_module.deliver_item(self.repo, row, flags, post, request)
+            return len(rows)
+
+        def publish(kind: str, before, after) -> None:
+            with mock.patch.object(enqueue_module, "load_flags", return_value=flags):
+                enqueue_module.publish_match_change(self.db, kind, before, after)
+
+        def set_match(**columns) -> dict:
+            before = self.repo.match_notice(self.match_id)
+            assignments = ", ".join(f"{name} = %s" for name in columns)
+            cursor = self.db.cursor()
+            cursor.execute(
+                f"UPDATE dbo.tblMatches SET {assignments}, UpdatedAt = SYSUTCDATETIME() WHERE Id = %s",
+                (*columns.values(), self.match_id),
+            )
+            self.db.commit()
+            return before
+
+        admin_id = next(_counter)
+        connection_id = self.repo.save_connection(admin_id, "google", encrypt_secret(key, "refresh-for-test"), "primary")
+        google_id = google_event_id(self.match_id)
+        try:
+            # Other tests leave connections behind in the scratch database. This test checks
+            # only its own calendar, so the others are voided for the run.
+            cursor = self.db.cursor()
+            cursor.execute("UPDATE dbo.tblCalendarConnections SET Void = 1 WHERE Void = 0 AND Id <> %s", (connection_id,))
+            self.db.commit()
+
+            # Scenario B: the match is created. One event is written.
+            publish("created", None, self.repo.match_notice(self.match_id))
+            self.assertEqual(deliver_pending(), 1)
+            self.assertEqual(calls, [("PUT", google_id), ("POST", google_id)])
+            self.assertEqual(self.repo.event_map(connection_id, self.match_id)["external_event_id"], google_id)
+
+            # Scenario C: the date moves. The existing event is updated in place, not duplicated.
+            before = set_match(ScheduledDate=date(2026, 11, 21))
+            publish("updated", before, self.repo.match_notice(self.match_id))
+            self.assertEqual(deliver_pending(), 1)
+            self.assertEqual(calls[-1], ("PUT", google_id))
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[google_id]["start"]["date"], "2026-11-21")
+
+            # Scenario D: the match goes live. The calendar shows it, on the same event.
+            before = set_match(Status=2)
+            publish("updated", before, self.repo.match_notice(self.match_id))
+            self.assertEqual(deliver_pending(), 1)
+            self.assertTrue(events[google_id]["summary"].startswith("Live:"), events[google_id]["summary"])
+            live_snapshot = self.repo.match_notice(self.match_id)
+
+            # Scenario E: the match ends with a result. The event carries it.
+            before = set_match(Status=3, Outcome=1, NetPoints=5)
+            publish("updated", before, self.repo.match_notice(self.match_id))
+            self.assertEqual(deliver_pending(), 1)
+            self.assertIn("won by 5", events[google_id]["summary"])
+            self.assertEqual(len(events), 1)
+
+            # An older live notice, queued before the result, is delivered now. It must not put
+            # the finished match back to live: the worker writes the match's current state.
+            stale = dict(live_snapshot, status=2)
+            self.repo.enqueue(stale, LIVE, key=f"{self.match_id}:stale-live:{next(_counter)}")
+            self.assertEqual(deliver_pending(), 1)
+            self.assertIn("won by 5", events[google_id]["summary"])
+            self.assertFalse(events[google_id]["summary"].startswith("Live:"))
+
+            # The match is cancelled. The event is marked cancelled, not removed.
+            before = set_match(Void=1)
+            publish("updated", before, self.repo.match_notice(self.match_id))
+            self.assertEqual(deliver_pending(), 1)
+            self.assertEqual(events[google_id]["status"], "cancelled")
+            self.assertEqual([method for method, _ in calls].count("POST"), 1)
+            self.assertEqual({event for _, event in calls}, {google_id})
+        finally:
+            cursor = self.db.cursor()
+            cursor.execute("UPDATE dbo.tblCalendarConnections SET Void = 1 WHERE Id = %s", (connection_id,))
+            self.db.commit()
+
     def _outbox_row(self, outbox_id: int) -> dict:
         cursor = self.db.cursor()
         cursor.execute(
@@ -186,6 +321,63 @@ class OutboxSqlTests(unittest.TestCase):
             cursor.execute("DELETE FROM dbo.tblSeasons WHERE Id = %s", (other_season,))
             self.db.commit()
 
+    def test_a_season_rename_touches_only_that_seasons_matches_and_names_them(self):
+        from services.notify.events import CALENDAR
+
+        other_season = self._insert_season()
+        other_match = self._insert_match(other_season)
+        try:
+            before = self.repo.match_notice(self.match_id)["updated_at"]
+            other_before = self.repo.match_notice(other_match)["updated_at"]
+            time.sleep(0.05)  # DATETIME2(6): the touch must land after the first stamp
+
+            notices = self.repo.touch_matches_for_rename(season_id=self.season_id)
+
+            self.assertEqual([n["id"] for n in notices], [self.match_id])
+            self.assertGreater(notices[0]["updated_at"], before)
+            self.assertEqual(self.repo.match_notice(other_match)["updated_at"], other_before)
+            self.assertEqual(self.repo.entity_name("season", self.season_id), notices[0]["season_name"])
+            outbox_id = self.repo.enqueue(notices[0], CALENDAR, key=f"{self.match_id}:{CALENDAR}:rename:sql-{next(_counter)}")
+            self.assertIsNotNone(outbox_id)
+        finally:
+            cursor = self.db.cursor()
+            cursor.execute("DELETE FROM dbo.tblNotificationOutbox WHERE MatchId = %s", (other_match,))
+            cursor.execute("DELETE FROM dbo.tblMatches WHERE Id = %s", (other_match,))
+            cursor.execute("DELETE FROM dbo.tblSeasons WHERE Id = %s", (other_season,))
+            self.db.commit()
+
+    def test_a_team_rename_with_no_matches_touches_nothing(self):
+        before = self.repo.match_notice(self.match_id)["updated_at"]
+        self.assertEqual(self.repo.touch_matches_for_rename(team_id=2_000_000_000), [])
+        self.assertEqual(self.repo.match_notice(self.match_id)["updated_at"], before)
+
+    def test_a_withdrawn_match_is_skipped_until_it_is_added_back(self):
+        admin_id = next(_counter)
+        connection_id = self.repo.save_connection(admin_id, "google", "encrypted-token", "primary")
+        self.assertEqual(self.repo.withdrawn_connection_ids(self.match_id), set())
+
+        # Never written: withdrawing still records the choice, with no event to delete yet.
+        self.repo.set_withdrawn(connection_id, self.match_id, True)
+        self.assertEqual(self.repo.withdrawn_connection_ids(self.match_id), {connection_id})
+        state = [s for s in self.repo.connection_match_states(admin_id, self.match_id) if s["id"] == connection_id][0]
+        self.assertEqual((state["removed"], state["on_calendar"]), (True, False))
+
+        # Written, then withdrawn: the event id survives so the worker can delete it.
+        self.repo.set_withdrawn(connection_id, self.match_id, False)
+        self.repo.save_event_map(connection_id, self.match_id, "cplmatch0000000001", "a" * 64)
+        state = [s for s in self.repo.connection_match_states(admin_id, self.match_id) if s["id"] == connection_id][0]
+        self.assertEqual((state["removed"], state["on_calendar"]), (False, True))
+        self.repo.set_withdrawn(connection_id, self.match_id, True)
+        self.assertEqual(self.repo.event_map(connection_id, self.match_id)["external_event_id"], "cplmatch0000000001")
+        self.assertEqual(self.repo.event_map(connection_id, self.match_id)["content_hash"].strip(), "")
+
+        # Added back: active again, and the cleared hash means the next write is not skipped.
+        self.repo.set_withdrawn(connection_id, self.match_id, False)
+        self.assertEqual(self.repo.withdrawn_connection_ids(self.match_id), set())
+        state = [s for s in self.repo.connection_match_states(admin_id, self.match_id) if s["id"] == connection_id][0]
+        self.assertEqual((state["removed"], state["on_calendar"]), (False, False))
+        self.assertEqual(self.repo.event_map(connection_id, self.match_id)["content_hash"].strip(), "")
+
     def test_the_same_notice_key_is_queued_once(self):
         from tests.test_notify import _match
 
@@ -233,6 +425,52 @@ class OutboxSqlTests(unittest.TestCase):
         self.assertFalse(self.repo.subscription_by_endpoint(flaky["endpoint"])["void"])
         self.repo.note_push_failure(flaky["id"], gone=False)
         self.assertTrue(self.repo.subscription_by_endpoint(flaky["endpoint"])["void"])
+
+    def test_a_push_success_clears_failures_so_only_consecutive_ones_void_a_device(self):
+        device = self.repo.save_subscription(self._subscription_row(f"https://push.example.test/{next(_counter)}"))
+        for _ in range(7):
+            self.repo.note_push_failure(device["id"], gone=False)
+        self.repo.note_push_success(device["id"])
+        row = self.repo.subscription_by_endpoint(device["endpoint"])
+        self.assertEqual(row["failure_count"], 0)
+        self.assertIsNotNone(row["last_success_at"])
+        for _ in range(7):
+            self.repo.note_push_failure(device["id"], gone=False)
+        self.assertFalse(self.repo.subscription_by_endpoint(device["endpoint"])["void"])
+
+    def test_the_sync_problem_choice_is_saved_and_a_notice_is_queued_once_per_connection(self):
+        admin_id = next(_counter)
+        device = self.repo.save_subscription(self._subscription_row(
+            f"https://push.example.test/{next(_counter)}", admin_id=admin_id, notify_sync_problem=False))
+        self.assertFalse(device["notify_sync_problem"])
+        self.assertTrue(self.repo.update_preferences(device["endpoint"], {"notify_sync_problem": True})["notify_sync_problem"])
+        self.repo.save_connection(admin_id, "google", "encrypted-token", "primary")
+        connection_id = self.repo.connections_for_admin(admin_id)[0]["id"]
+        self.assertIsNotNone(self.repo.enqueue_sync_problem(connection_id, admin_id, "google"))
+        self.assertIsNone(self.repo.enqueue_sync_problem(connection_id, admin_id, "google"))
+        key = f"connection:{connection_id}:sync_problem"
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute("SELECT COUNT(*) AS Total FROM dbo.tblNotificationOutbox WHERE IdempotencyKey = %s", (key,))
+        self.assertEqual(int(cursor.fetchone()["Total"]), 1)
+        # This row has match id 0, so the shared teardown does not remove it.
+        cursor.execute("DELETE FROM dbo.tblNotificationOutbox WHERE IdempotencyKey = %s", (key,))
+        self.db.commit()
+
+    def test_reconnecting_keeps_the_written_events_and_the_removed_matches(self):
+        admin_id = next(_counter)
+        first = self.repo.save_connection(admin_id, "microsoft", "encrypted-token", "me")
+        self.repo.save_event_map(first, self.match_id, "graph-event-1", "a" * 64)
+
+        second = self.repo.save_connection(admin_id, "microsoft", "encrypted-token-2", "me")
+        self.assertNotEqual(first, second)
+        # The mapped id carries over with no hash, so the backfill PATCHes it instead of posting a copy.
+        self.assertEqual(self.repo.event_map(second, self.match_id), {"external_event_id": "graph-event-1", "content_hash": ""})
+        self.assertNotIn(second, self.repo.withdrawn_connection_ids(self.match_id))
+
+        self.repo.set_withdrawn(second, self.match_id, True)
+        third = self.repo.save_connection(admin_id, "microsoft", "encrypted-token-3", "me")
+        self.assertIn(third, self.repo.withdrawn_connection_ids(self.match_id))
+        self.assertEqual([c["id"] for c in self.repo.connections_for_admin(admin_id)], [third])
 
     def test_a_calendar_event_map_is_updated_in_place(self):
         admin_id = next(_counter)

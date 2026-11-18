@@ -25,6 +25,10 @@ SYNC = "sync"
 CALENDAR = "calendar"
 # Push-only, season level: a schedule rebuild. One alert per device, not one per match.
 SCHEDULE = "schedule"
+# Calendar-only, one connection: the admin removed this match from that calendar.
+WITHDRAW = "withdraw"
+# Push-only, one admin's devices: a calendar connection needs the admin to connect it again.
+SYNC_PROBLEM = "sync_problem"
 
 STATUS_SCHEDULED = 1
 STATUS_LIVE = 2

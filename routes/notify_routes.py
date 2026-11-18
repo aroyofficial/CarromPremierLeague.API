@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from datetime import datetime, timezone
 
@@ -25,10 +26,12 @@ from schemas.notify_schema import (
 from services.auth_service import AuthService
 from services.match_rules import league_today
 from services.notify.enqueue import backfill_connection
+from services.notify.events import SYNC, WITHDRAW, idempotency_key
 from services.notify.flags import NotifyFlags, load_flags
 from services.notify.ics import calendar_etag, calendar_text, not_modified
 from services.notify import telemetry
 from services.notify.limits import RateLimiter
+from services.notify.push import endpoint_is_push_service
 from services.notify.providers import (
     ProviderError,
     ProviderNotConfigured,
@@ -57,11 +60,21 @@ def _flags() -> NotifyFlags:
     return load_flags()
 
 
+def _proxy_hops() -> int:
+    try:
+        return max(1, int(os.environ.get("CPL_TRUSTED_PROXY_HOPS", "1")))
+    except ValueError:
+        return 1
+
+
 def _client_key(request: Request) -> str:
-    # The API runs behind the host's proxy, so the socket address is the proxy's. Same rule as the assistant limiter.
-    forwarded = request.headers.get("x-forwarded-for", "")
+    # The API runs behind the host's proxy, so the socket address is the proxy's. A visitor can put
+    # any address at the front of X-Forwarded-For, so the key is the entry the trusted proxies added:
+    # the CPL_TRUSTED_PROXY_HOPS-th from the right (one proxy by default).
+    forwarded = [part.strip() for part in request.headers.get("x-forwarded-for", "").split(",") if part.strip()]
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        hops = _proxy_hops()
+        return forwarded[-hops] if len(forwarded) >= hops else forwarded[0]
     return request.client.host if request.client else "unknown"
 
 
@@ -120,6 +133,9 @@ def _https_endpoint(value: str) -> str:
     endpoint = value.strip()
     if not endpoint.startswith("https://") or len(endpoint) > 2000:
         raise HTTPException(status_code=400, detail="The push endpoint must be an https URL.")
+    # The worker calls this URL, so only a browser's own push service is accepted.
+    if not endpoint_is_push_service(endpoint):
+        raise HTTPException(status_code=400, detail="The push endpoint must come from a supported browser push service.")
     return endpoint
 
 
@@ -139,6 +155,7 @@ def _preference_row(request: PushSubscribeRequest | PushPreferenceRequest, endpo
         "notify_ended": request.notify_ended,
         "notify_score": request.notify_score,
         "notify_reminder": request.notify_reminder,
+        "notify_sync_problem": request.notify_sync_problem,
     }
 
 
@@ -190,6 +207,7 @@ def subscribe(
             if current and not current["void"]:
                 return ApiResponse(success=True, message="This device will get match alerts.", data=public_subscription(current))
     saved = repository.save_subscription(row)
+    telemetry.count("push.rotated" if previous else "push.subscribed")
     if previous and previous["endpoint"] != endpoint:
         repository.void_subscription(previous["endpoint"])
     return ApiResponse(success=True, message="This device will get match alerts.", data=public_subscription(saved))
@@ -205,6 +223,7 @@ ROTATED_FIELDS = (
     "notify_ended",
     "notify_score",
     "notify_reminder",
+    "notify_sync_problem",
 )
 
 
@@ -225,6 +244,7 @@ def update_subscription(body: PushPreferenceRequest, db=Depends(get_db)):
             "notify_ended": body.notify_ended,
             "notify_score": body.notify_score,
             "notify_reminder": body.notify_reminder,
+            "notify_sync_problem": body.notify_sync_problem,
         },
     )
     if not saved:
@@ -237,6 +257,7 @@ def unsubscribe(body: PushUnsubscribeRequest, db=Depends(get_db)):
     endpoint = _https_endpoint(body.endpoint)
     if not NotifyRepository(db).void_subscription(endpoint):
         raise HTTPException(status_code=404, detail="This device is not subscribed.")
+    telemetry.count("push.unsubscribed")
     return ApiResponse(success=True, message="Alerts turned off for this device.", data=True)
 
 
@@ -254,6 +275,7 @@ def create_feed(body: CalendarFeedRequest, request: Request, db=Depends(get_db))
     token = secrets.token_urlsafe(32)
     label = "Carrom Premier League"
     repository.create_feed(body.season_id, body.team_id, token, label)
+    telemetry.count("calendar.feed_created")
     urls = feed_urls(str(request.base_url).rstrip("/"), token)
     return ApiResponse(
         success=True,
@@ -266,6 +288,7 @@ def create_feed(body: CalendarFeedRequest, request: Request, db=Depends(get_db))
 def revoke_feed(token: str, db=Depends(get_db)):
     if not NotifyRepository(db).revoke_feed(token):
         raise HTTPException(status_code=404, detail="Calendar feed not found.")
+    telemetry.count("calendar.feed_revoked")
     return ApiResponse(success=True, message="Calendar feed revoked.", data=True)
 
 
@@ -281,6 +304,7 @@ def season_feed(token: str, request: Request, db=Depends(get_db)):
     matches = repository.feed_matches(feed["season_id"], feed["team_id"])
     body = calendar_text(matches, feed["label"], flags.public_web_url)
     etag = calendar_etag(body)
+    telemetry.count("calendar.feed_requested")
     if not_modified(request.headers.get("if-none-match"), etag):
         return Response(status_code=304, headers={"ETag": f'"{etag}"', "Cache-Control": "private, max-age=60, must-revalidate"})
     return Response(
@@ -347,7 +371,7 @@ def notify_telemetry(admin=Depends(get_current_admin), db=Depends(get_db)):
     return ApiResponse(
         success=True,
         message="Match alert counters",
-        data={"process_counts": telemetry.snapshot(), "delivery_health": health},
+        data={"process_counts": telemetry.snapshot(), "latency": telemetry.latency(), "delivery_health": health},
     )
 
 
@@ -356,12 +380,14 @@ GOOGLE_REVOKE = "https://oauth2.googleapis.com/revoke"
 
 
 def sync_state(status: str, sync: dict | None) -> str:
-    """What the admin sees for one connection: connected, update_pending, synced, sync_failed, or reauthorization_required."""
+    """What the admin sees for one connection: connected, syncing, update_pending, synced, sync_failed, or reauthorization_required."""
     if status == "revoked":
         return "reauthorization_required"
     sync = sync or {}
     if sync.get("last_status") == "failed":
         return "sync_failed"
+    if sync.get("in_flight"):
+        return "syncing"
     if sync.get("queue_pending"):
         return "update_pending"
     if sync.get("last_status") in ("sent", "skipped"):
@@ -417,6 +443,59 @@ def disconnect(connection_id: int, admin=Depends(get_current_admin), db=Depends(
         success=True,
         message="Calendar disconnected. Events already on the calendar stay until you delete them.",
         data=True,
+    )
+
+
+@router.get("/calendar/matches/{match_id}/connections")
+def match_calendar_states(match_id: int, admin=Depends(get_current_admin), db=Depends(get_db)):
+    """For each of the admin's connections: whether this match is on that calendar, or was removed."""
+    return ApiResponse(
+        success=True,
+        message="Calendar state for this match",
+        data=NotifyRepository(db).connection_match_states(admin.id, match_id),
+    )
+
+
+def _one_connection_change(db, connection_id: int, match_id: int, admin_id: int, event: str) -> None:
+    """Shared checks for withdraw and restore. The connection must be the admin's and live, and
+    the provider must be configured, or the change could not reach the calendar."""
+    repository = NotifyRepository(db)
+    row = repository.connection_for_admin(connection_id, admin_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Calendar connection not found.")
+    if row["status"] != "active":
+        raise HTTPException(status_code=409, detail="This calendar needs to be connected again first.")
+    flags = _flags()
+    reason = flags.google_block_reason() if row["provider"] == "google" else flags.microsoft_block_reason()
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
+    match = repository.match_notice(match_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Match not found.")
+    repository.set_withdrawn(connection_id, match_id, event == WITHDRAW)
+    key = idempotency_key(int(match_id), f"{event}:{int(connection_id)}", datetime.now(timezone.utc))
+    repository.enqueue(match, event, key=key, connection_id=int(connection_id))
+
+
+@router.post("/calendar/connections/{connection_id}/matches/{match_id}/withdraw")
+def withdraw_match(connection_id: int, match_id: int, admin=Depends(get_current_admin), db=Depends(get_db)):
+    """Remove one match from one connected calendar. Later changes skip that calendar until it is added back."""
+    _one_connection_change(db, connection_id, match_id, admin.id, WITHDRAW)
+    return ApiResponse(
+        success=True,
+        message="Removing the match from that calendar.",
+        data={"connection_id": connection_id, "match_id": match_id, "removed": True},
+    )
+
+
+@router.post("/calendar/connections/{connection_id}/matches/{match_id}/restore")
+def restore_match(connection_id: int, match_id: int, admin=Depends(get_current_admin), db=Depends(get_db)):
+    """Add one removed match back to one connected calendar."""
+    _one_connection_change(db, connection_id, match_id, admin.id, SYNC)
+    return ApiResponse(
+        success=True,
+        message="Adding the match back to that calendar.",
+        data={"connection_id": connection_id, "match_id": match_id, "removed": False},
     )
 
 

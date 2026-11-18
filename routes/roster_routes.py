@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from core.database import get_db
 from core.response import ApiResponse
 from routes.auth_routes import require_permission
+from services.notify.enqueue import publish_player_change
 from repositories.roster_repository import RosterRepository
 from services.roster_service import RosterService
 from controllers.roster_controller import RosterController
@@ -36,13 +37,15 @@ def get_controller(db=Depends(get_db)) -> RosterController:
 )
 def assign_player(
     request: RosterAssignRequest,
-    controller: RosterController = Depends(get_controller)
+    controller: RosterController = Depends(get_controller),
+    db=Depends(get_db)
 ):
     result = controller.assign_player(
         request.season_id,
         request.team_id,
         request.player_id
     )
+    publish_player_change(db, player_id=request.player_id, season_id=request.season_id)
 
     return ApiResponse(
         success=True,
@@ -53,12 +56,14 @@ def assign_player(
 @router.delete("/remove", response_model=ApiResponse[bool], dependencies=[Depends(require_permission("rosters.manage"))])
 def remove_player(
     request: RemovePlayerRequest,
-    controller=Depends(get_controller)
+    controller=Depends(get_controller),
+    db=Depends(get_db)
 ):
     result = controller.remove_player(
         request.season_id,
         request.player_id
     )
+    publish_player_change(db, player_id=request.player_id, season_id=request.season_id)
 
     return ApiResponse(
         success=True,

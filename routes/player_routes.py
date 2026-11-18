@@ -17,6 +17,7 @@ from core.response import ApiResponse
 from core.storage import MediaStorage, get_storage
 from routes.auth_routes import require_permission
 from services.media_service import MediaService
+from services.notify.enqueue import publish_player_change
 
 
 router = APIRouter(
@@ -94,9 +95,13 @@ def create(
 def update(
     player_id: int,
     request: PlayerUpdateRequest,
-    controller: PlayerController = Depends(get_controller)
+    controller: PlayerController = Depends(get_controller),
+    db=Depends(get_db)
 ):
     result = controller.update(player_id, request)
+    # A name change shows in the calendar events of every match the player appears in.
+    if request.first_name is not None or request.last_name is not None:
+        publish_player_change(db, player_id=player_id)
 
     return ApiResponse(
         success=True,

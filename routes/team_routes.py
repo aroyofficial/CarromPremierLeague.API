@@ -14,6 +14,7 @@ from core.response import ApiResponse
 from core.storage import MediaStorage, get_storage
 from routes.auth_routes import require_permission
 from services.media_service import MediaService
+from services.notify.enqueue import publish_rename, read_name
 
 
 router = APIRouter(
@@ -78,9 +79,13 @@ def create(
 def update(
     team_id: int,
     request: TeamUpdateRequest,
+    db=Depends(get_db),
     controller: TeamController = Depends(get_controller)
 ):
+    previous = read_name(db, "team", team_id) if request.name is not None else None
     result = controller.update(team_id, request)
+    if previous and result.name != previous:
+        publish_rename(db, team_id=team_id)
 
     return ApiResponse(
         success=True,

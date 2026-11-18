@@ -262,6 +262,24 @@ def _status(response) -> int:
     return int(getattr(response, "status_code", 500) or 500)
 
 
+def delete_google_event(access_token: str, event_id: str, request) -> None:
+    """Remove the match's event from the primary calendar. An event that is already gone counts as removed."""
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    response = request("DELETE", f"{GOOGLE_EVENTS}/{event_id}", json=None, headers=headers)
+    status = _status(response)
+    if status >= 400 and status not in (404, 410):
+        raise provider_failure(response, status)
+
+
+def delete_microsoft_event(access_token: str, event_id: str, request) -> None:
+    """Remove the event from the user's calendar. An event that is already gone counts as removed."""
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    response = request("DELETE", f"{MICROSOFT_EVENTS}/{event_id}", json=None, headers=headers)
+    status = _status(response)
+    if status >= 400 and status != 404:
+        raise provider_failure(response, status)
+
+
 def upsert_google_event(access_token: str, match: dict, public_web_url: str, request) -> str:
     """Update the match's event, creating it under the same stable id the first time.
 

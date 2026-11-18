@@ -4,16 +4,44 @@ from __future__ import annotations
 
 import json
 import logging
+from urllib.parse import urlsplit
 
 from services.notify.copy import alert_body, alert_title
-from services.notify.events import SCHEDULE
+from services.notify.events import SCHEDULE, SYNC_PROBLEM
 from services.notify.ics import sequence_for
 
 logger = logging.getLogger(__name__)
 
+# The browser push services. The worker POSTs to a subscription's endpoint, so an endpoint must
+# name one of these hosts. Otherwise an anonymous visitor could make the server call any address.
+# Chromium browsers (Chrome, Edge, Opera, Samsung Internet) use FCM. Firefox uses Mozilla's service.
+# Safari uses Apple's. Windows WNS is listed for older Edge.
+ALLOWED_PUSH_HOSTS = ("fcm.googleapis.com", "push.services.mozilla.com", "web.push.apple.com", "notify.windows.com")
+
+
+def endpoint_is_push_service(endpoint: str) -> bool:
+    try:
+        host = (urlsplit(endpoint).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return any(host == allowed or host.endswith("." + allowed) for allowed in ALLOWED_PUSH_HOSTS)
+
 
 def push_payload(event: str, match: dict, before: dict | None, public_web_url: str, notice_id: int | None = None) -> dict:
     season_id = match.get("season_id")
+    if event == SYNC_PROBLEM:
+        # Not about a match: it opens the admin settings page, where the connection is listed.
+        return {
+            "title": alert_title(event),
+            "body": alert_body(event, match, before),
+            "tag": "calendar-sync-problem",
+            "url": f"{public_web_url}/admin/settings" if public_web_url else "/admin/settings",
+            "matchId": None,
+            "seasonId": None,
+            "event": event,
+            "noticeId": notice_id,
+            "version": 1,
+        }
     season_wide = event == SCHEDULE
     anchor = f"#match-{match.get('id')}" if match.get("id") and not season_wide else ""
     url = f"{public_web_url}/schedule{anchor}" if public_web_url else f"/schedule{anchor}"

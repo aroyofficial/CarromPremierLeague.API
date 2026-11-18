@@ -14,7 +14,9 @@ from services.notify.events import (
     SCHEDULED,
     SCORE,
     SYNC,
+    SYNC_PROBLEM,
     TEAMS,
+    WITHDRAW,
 )
 from services.notify.flags import NotifyFlags
 
@@ -29,10 +31,13 @@ PREFERENCE_FIELD = {
     SCORE: "notify_score",
     RESET: "notify_changed",
     REMINDER: "notify_reminder",
+    SYNC_PROBLEM: "notify_sync_problem",
 }
 
-CALENDAR_ONLY = {SYNC, CALENDAR}
-PUSH_ONLY = {SCHEDULE}
+CALENDAR_ONLY = {SYNC, CALENDAR, WITHDRAW}
+# Notices that name one connection. Every other calendar notice skips withdrawn connections.
+ONE_CONNECTION = {SYNC, WITHDRAW}
+PUSH_ONLY = {SCHEDULE, SYNC_PROBLEM}
 LIVE_STATUS = {LIVE, ENDED, SCORE}
 
 
@@ -40,6 +45,9 @@ def subscription_wants(subscription: dict, event: str, match: dict) -> bool:
     field = PREFERENCE_FIELD.get(event)
     if field and not subscription.get(field, True):
         return False
+    if event == SYNC_PROBLEM:
+        # The admin's own device hears this whatever season or team the device filtered on.
+        return True
     season_id = subscription.get("season_id")
     if season_id not in (None, "", 0) and int(season_id) != int(match.get("season_id") or 0):
         return False
@@ -62,7 +70,7 @@ def delivery_plan(
     only_connection: int | None = None,
 ) -> list[dict]:
     actions: list[dict] = []
-    if event == SYNC:
+    if event in ONE_CONNECTION:
         connections = [row for row in connections if only_connection is not None and int(row.get("id") or 0) == int(only_connection)]
 
     if event not in CALENDAR_ONLY:

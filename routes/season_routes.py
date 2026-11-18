@@ -6,7 +6,7 @@ from core.response import ApiResponse
 from routes.auth_routes import require_permission
 from controllers.season_controller import SeasonController
 from schemas.schedule_schema import SeasonScheduleResponse
-from services.notify.enqueue import publish_schedule_rebuild, season_scheduled
+from services.notify.enqueue import publish_rename, publish_schedule_rebuild, read_name, season_scheduled
 from schemas.season_schema import (
     SeasonCreateRequest,
     SeasonUpdateRequest,
@@ -71,7 +71,10 @@ def update_season(
     db=Depends(get_db)
 ):
     controller = SeasonController(db)
+    previous = read_name(db, "season", season_id) if request.name is not None else None
     result = controller.update(season_id, request)
+    if previous and result.name != previous:
+        publish_rename(db, season_id=season_id)
 
     return ApiResponse(
         success=True,

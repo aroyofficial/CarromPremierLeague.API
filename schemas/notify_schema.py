@@ -16,6 +16,7 @@ class PushSubscribeRequest(BaseModel):
     notify_ended: bool = True
     notify_score: bool = True
     notify_reminder: bool = True
+    notify_sync_problem: bool = True
     # Set by the service worker when the browser rotates a subscription. The new endpoint
     # keeps the old one's choices, and the old row is turned off.
     replaces_endpoint: str | None = Field(default=None, min_length=12, max_length=2000)
@@ -32,6 +33,7 @@ class PushPreferenceRequest(BaseModel):
     notify_ended: bool = True
     notify_score: bool = True
     notify_reminder: bool = True
+    notify_sync_problem: bool = True
 
 
 class PushUnsubscribeRequest(BaseModel):

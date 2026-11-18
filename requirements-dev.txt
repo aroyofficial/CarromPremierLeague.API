@@ -1,0 +1,3 @@
+-r requirements.txt
+# Only for the tests that parse calendar files with a real iCalendar library. Without it those tests are skipped.
+icalendar>=6,<7

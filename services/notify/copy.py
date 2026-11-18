@@ -54,6 +54,16 @@ def summary(match: dict) -> str:
     return title
 
 
+def roster_lines(match: dict) -> list[str]:
+    """One line per team that has players on its roster for the season. Empty when none are listed."""
+    lines = []
+    for name_key, players_key in (("team1_name", "team1_players"), ("team2_name", "team2_players")):
+        players = match.get(players_key) or []
+        if players:
+            lines.append(f"{match.get(name_key) or 'Team'} players: {', '.join(players)}")
+    return lines
+
+
 def description(match: dict, public_web_url: str) -> str:
     lines = [
         summary(match),
@@ -63,6 +73,7 @@ def description(match: dict, public_web_url: str) -> str:
     scored = result_line(match)
     if scored:
         lines.append(scored)
+    lines.extend(roster_lines(match))
     season_id = match.get("season_id")
     if public_web_url and season_id:
         lines.append(f"{public_web_url}/schedule")
@@ -81,11 +92,14 @@ def alert_title(event: str) -> str:
         "reset": "Match reset",
         "reminder": "Match day",
         "schedule": "Schedule updated",
+        "sync_problem": "Calendar needs attention",
     }
     return titles.get(event, "Carrom Premier League")
 
 
 def alert_body(event: str, match: dict, before: dict | None = None) -> str:
+    if event == "sync_problem":
+        return "A connected calendar stopped updating. Connect it again to keep match updates coming."
     title = pair(match)
     when = _day_label(match.get("scheduled_date"))
     if event == "schedule":

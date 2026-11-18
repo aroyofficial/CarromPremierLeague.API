@@ -16,10 +16,15 @@ A match row has a date, two teams, a status, and a result. It does not have a st
 - Moving the date is the postpone. There is no separate postponed status.
 - A voided or deleted match is the cancellation.
 - A venue change cannot be synced, because no venue is stored.
-- Renaming a team or a season changes no match row, so it sends no notice. Connected calendars and later alerts show the new name the next time that match changes. The subscription feed shows it on its next fetch.
+- Renaming a team or a season is calendar-only. Each live match that shows the name, played or not, gets one write to every connected calendar, and the subscription feed's `SEQUENCE` moves so it picks up the new name on its next fetch. No device is alerted. A rename changes no other field.
+- An event carries the two team names, the season, the category, the result once played, a line listing each team's players, and a link to the match. The player lines come from the season's rosters (`tblPlayersSeasonsTeams`), not from match stats, so they show before a match is played. Push alerts do not list players.
+- A player's name change, and a roster change (a player assigned to, moved to, or removed from a team for the season), rewrites the calendar event of every match that player's team plays in that season, or in every season for a rename. Each rewrite is calendar-only and content-hashed, so an event whose text does not change is not written again. Deploying this changes the description of existing events once; no other field changes.
+- Roster names are not stored in the outbox. They are read again when the worker writes the event.
 - A device that follows every season also gets alerts for seasons hidden from the public site (`tblSeasons.Show = 0`). The same matches are already public through `GET /matches`.
 
 Public visitors do not have accounts. They subscribe a device, or a calendar link. Connecting Google or Outlook requires an admin sign-in. Refresh tokens are encrypted with `CPL_CALENDAR_TOKEN_KEY` before they are stored.
+
+A push endpoint must be an `https://` URL on a browser's own push service: `fcm.googleapis.com` (Chrome, Edge, Opera, Samsung Internet), `push.services.mozilla.com` (Firefox), `web.push.apple.com` (Safari), or `notify.windows.com` (older Edge). The subscribe route refuses any other host, because the worker sends to the endpoint it is given. Without this check, an anonymous visitor could make the server call any address.
 
 ## Flags
 
@@ -48,9 +53,58 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 Do not commit either secret. Do not put them in the web build.
 
+## Setup
+
+### VAPID (Web Push)
+
+1. Generate the pair with `npx web-push generate-vapid-keys`.
+2. On the API host set `CPL_VAPID_PUBLIC_KEY` and `CPL_VAPID_PRIVATE_KEY` (the private key stays on the server only), and `CPL_VAPID_SUBJECT` as a `mailto:` or `https:` contact.
+3. Set `CPL_PUSH_ENABLED=true`. The public key is served by `GET /notifications/capabilities` for the browser to subscribe with. The private key is never returned.
+4. Rotating the pair invalidates every existing subscription. Plan a rotation as a re-subscribe window, then void the old rows.
+
+`CPL_PUBLIC_WEB_URL` sets the origin used for links in alerts and calendar events. It defaults to the public site.
+
+### Calendar feed token key
+
+`CPL_CALENDAR_TOKEN_KEY` is a Fernet key. It encrypts stored Google and Microsoft refresh tokens. Losing it means every connected admin must connect again. Changing it without re-encrypting has the same effect.
+
+### Google Calendar (OAuth 2.0)
+
+1. In Google Cloud Console, create a project and enable the Google Calendar API.
+2. Configure the OAuth consent screen. Add the scope `https://www.googleapis.com/auth/calendar.events`. This is the only scope the integration requests. Google's `calendar.events` covers events on all of the admin's calendars, which is broader than needed. The code writes only to the primary calendar (`calendars/primary/events`).
+3. Create an OAuth client of type **Web application**. Add the authorized redirect URI `{CPL_OAUTH_REDIRECT_BASE}/calendar/google/callback`.
+4. Set `CPL_GOOGLE_CALENDAR_CLIENT_ID`, `CPL_GOOGLE_CALENDAR_CLIENT_SECRET`, `CPL_OAUTH_REDIRECT_BASE`, `CPL_CALENDAR_TOKEN_KEY`, then `CPL_GOOGLE_CALENDAR_ENABLED=true`.
+
+Google marks `calendar.events` as a sensitive scope. While the consent screen is in **Testing** status, only listed test users can connect, and Google expires their refresh tokens after seven days. Those connections then show **Reauthorization required**. Publishing the app and completing Google's verification removes the seven-day expiry and opens the app to any Google account. Both steps belong to the operator and are not done by this code.
+
+Authorization uses PKCE (S256) with `access_type=offline` and `prompt=consent`, so a refresh token is issued.
+
+The `state` value is an HMAC over the provider, the signed-in admin, and a ten-minute expiry. It is not bound to the browser that started the request: anyone who holds that admin's bearer token can begin a connection, and the callback completes for whichever browser presents the returned `state`. The code exchange still needs the PKCE verifier, which is derived from `state` and the server secret, so a captured code alone cannot be redeemed. A connection always lands on the admin named in `state`, never on a different account.
+
+### Microsoft 365 / Outlook (OAuth 2.0 via Microsoft Graph)
+
+1. In the Microsoft Entra admin center, register an application. For a public league, choose "Accounts in any organizational directory and personal Microsoft accounts".
+2. Add a **Web** redirect URI `{CPL_OAUTH_REDIRECT_BASE}/calendar/microsoft/callback`.
+3. Under Certificates & secrets, create a client secret. Store its value only in `CPL_MICROSOFT_CALENDAR_CLIENT_SECRET`.
+4. Under API permissions, add the delegated Microsoft Graph permissions `Calendars.ReadWrite` and `offline_access`. Some tenants require an administrator to grant consent.
+5. Set `CPL_MICROSOFT_CALENDAR_CLIENT_ID`, `CPL_MICROSOFT_CALENDAR_CLIENT_SECRET`, `CPL_OAUTH_REDIRECT_BASE`, `CPL_CALENDAR_TOKEN_KEY`, then `CPL_MICROSOFT_CALENDAR_ENABLED=true`.
+
+Scopes requested: `offline_access Calendars.ReadWrite`. Graph has no events-only delegated scope, so `Calendars.ReadWrite` is broader than the integration needs. The code uses only `/me/events` and never reads other calendar resources.
+
+Authorization uses PKCE (S256) and the standard code flow. The callback checks the signed state before it exchanges the code with the PKCE verifier.
+
+### Scopes and tokens, summarised
+
+| Provider | Scope | Refresh token | Stored as |
+| --- | --- | --- | --- |
+| Google | `calendar.events` | Yes (`access_type=offline`) | Fernet-encrypted in `tblCalendarConnections` |
+| Microsoft | `offline_access Calendars.ReadWrite` | Yes | Fernet-encrypted in `tblCalendarConnections` |
+
+Access tokens are not stored. They are refreshed per run and never written to logs or telemetry.
+
 ## Order of deployment
 
-1. Create the subscription, feed, connection, outbox, and delivery tables. The block is in both `Setup-Database.ps1` and `setup.sql`, and it is safe to run again. Re-running it on a database built from an earlier draft drops `FK_tblCalendarEventMaps_tblMatches`, which would otherwise block a schedule rebuild once a match has synced. On a fresh database, run `setup.sql` with `sqlcmd -b`. SQL generated from `Setup-Database.ps1` currently stops in `usp_GetSeasonTopCoinPotters`, a pre-existing gap, and the `.ps1` overwrites `setup.sql` when it runs.
+1. Run the database script before deploying the API. The API reads `NotifySyncProblem` and `LastSuccessAt`, which this script adds, so an API deployed first fails on those columns until the script runs. Create the subscription, feed, connection, outbox, and delivery tables. The block is in both `Setup-Database.ps1` and `setup.sql`, and it is safe to run again. Re-running it on a database built from an earlier draft drops `FK_tblCalendarEventMaps_tblMatches`, which would otherwise block a schedule rebuild once a match has synced. On a fresh database, run `setup.sql` with `sqlcmd -b`. SQL generated from `Setup-Database.ps1` currently stops in `usp_GetSeasonTopCoinPotters`, a pre-existing gap, and the `.ps1` overwrites `setup.sql` when it runs.
 2. Deploy the API with the flags still false.
 3. Deploy the web. The new controls stay hidden while the flags are false.
 4. Turn on `CPL_CALENDAR_FEED_ENABLED` first. It needs no third-party account.
@@ -86,14 +140,20 @@ Building a season's schedule (`POST /seasons/{id}/schedule`) deletes every unpla
 - Each new match is written to every connected calendar.
 - Devices get one "Schedule updated" alert with the number of new matches. It honours the "scheduled" choice and the season filter, and it ignores the team filter, because the whole season moved.
 
+A team or season rename (`PATCH /teams/{id}`, `PUT /seasons/{id}`, when the name actually changes) follows the same rule for calendars. The route touches `UpdatedAt` on the team's or season's non-void matches, which moves their feed `SEQUENCE`, and queues one calendar-only write per match. Each key is unique to that rename, so a retried request writes the same content again and the provider skips it. If the queue fails after the rename commits, the rename still succeeds and the calendars catch up on that match's next change.
+
 If the rebuild fails, nothing is queued. If queueing fails, the rebuild still succeeds and the failure is logged.
 
 Web Push details:
 
 - The alert links to `/schedule#match-<id>`, and that match's card scrolls into view. A click reuses an open schedule tab. The season alert links to `/schedule`.
+- On Chromium browsers (Chrome and Edge), if a page of the public site is open and in front of the person, the service worker sends the notice to that page and shows no system alert. The page shows it as an in-page notice. A hidden or background tab still gets the system alert. Other browsers, including Safari and Firefox, always show the system alert, because only Chromium documents the focused-tab exemption and Safari drops a push that shows nothing.
 - Each alert has the tag `match-<id>-<event>`, so a repeat of the same notice replaces the earlier alert instead of stacking. The season alert uses `season-<id>-schedule`.
 - The payload carries `noticeId` (the outbox row) and `version` (the same number as the calendar `SEQUENCE`), plus the title, body, link, match id, season id, and event. It carries no personal data.
-- When the browser rotates a subscription, the service worker registers the new endpoint with `replaces_endpoint`. The new row keeps the old row's choices, and the old row is turned off. On the next visit the page swaps its saved endpoint for the browser's current one and reports the rotation too, so it is registered even when the worker's event never fired. A second report of the same rotation keeps the row and its choices as they are. If the browser no longer has a subscription, the page shows alerts as off.
+- Each accepted message records the device's last-success time and clears its failure count. A device is voided at once on a 404 or 410 from the push service, and after eight failures with no success in between otherwise. A success resets the count.
+- **Calendar needs attention** is offered only to a signed-in admin. When one of that admin's calendar connections is revoked, each of that admin's own devices with the choice on gets one alert, and it links to the admin settings page. Other devices never get it. The notice is queued once per connection, so a retry or a second revoke queues nothing new.
+- The page states the browser's permission in plain words. When it is blocked, the page says to allow notifications in the site settings and reload. The browser's prompt appears only after the **Notify this device** button is tapped.
+- When the browser rotates a subscription, the service worker registers the new endpoint with `replaces_endpoint`. The new row keeps the old row's choices, and the old row is turned off. On the next visit the page swaps its saved endpoint for the browser's current one and reports the rotation too, so it is registered even when the worker's event never fired. A second report of the same rotation keeps the row and its choices as they are. If the browser no longer has a subscription, the page shows alerts as off and turns the server row off too, because the Windows push service keeps accepting messages for a dropped endpoint instead of answering 410. If that call fails for a reason other than "not subscribed", the page keeps the saved endpoint and tries again on the next visit.
 
 Browser support:
 
@@ -107,9 +167,9 @@ Browser support:
 
 This table comes from the browsers' documented support. None of these browsers was tested in a real run here.
 
-Subscribe and feed-creation requests are rate limited per visitor. Behind the host's proxy, the visitor is the first `X-Forwarded-For` address, the same rule the assistant limiter uses.
+Subscribe and feed-creation requests are rate limited per visitor. A visitor can write anything at the front of `X-Forwarded-For`, so the key is the address the trusted proxies appended: the `CPL_TRUSTED_PROXY_HOPS`-th entry from the right, defaulting to the last entry for a single proxy. Set the variable to the number of proxies you run. With no header, the key is the socket address.
 
-A feed link is a bearer secret, because anyone with the URL can read that feed. Its token has 256 random bits. The database stores only the token's SHA-256, so a copy of the table cannot open a feed. The API's access log writes `/calendar/feeds/[redacted]` in place of the token. A proxy or host log in front of the API is outside this code, so check that it does not keep full request paths. Revoking a link voids it at once.
+A feed link is a bearer secret, because anyone with the URL can read that feed. Its token has 256 random bits. The database stores only the token's SHA-256, so a copy of the table cannot open a feed. The API's access log writes `/calendar/feeds/[redacted]` in place of the token. A proxy or host log in front of the API is outside this code, so check that it does not keep full request paths. Revoking a link voids it at once. The match page's **Revoke this link** button calls the same route and clears the link from the screen. A calendar that already holds the link stops getting updates, because its next fetch returns 404.
 
 The calendar feed does not use the outbox. The next time a calendar app fetches the link, it receives the current matches. `SEQUENCE` follows the match's update time, and a cancelled match is `STATUS:CANCELLED`. Apps choose their own refresh interval. The feed asks for 15 minutes. Google's "add by URL" often refreshes about once a day. That limit belongs to Google, not to this feed. The Google Calendar API path updates the event from the worker when credentials exist, which is the faster account sync.
 
@@ -126,12 +186,17 @@ The OAuth request carries two protections:
 
 Connecting fills the calendar. Right after the callback, every match still to be played, from today on and up to 200, is queued for that calendar only. Later changes reach it as they happen. Connecting covers the whole schedule; to add a single match, use its one-time file.
 
+Removing one match from a connected calendar is per connection. On a match's page, a connected Google or Outlook row offers **Remove this match**. The API marks that match as withdrawn for that connection only, and the worker deletes its event: Google marks it cancelled, Outlook deletes it. The admin's other connections and the match itself are unaffected. A withdrawn match is skipped by every later write to that connection, so a schedule change or a rename does not put it back. **Add this match back** clears the mark and queues the match for that connection, so the event is written again. A withdraw that arrives before the first write has no event to delete and is recorded as a no-op. The withdrawal is queued, so the calendar updates on the worker's next run, not at the click.
+
 States shown for a connection:
 
 - **Connected**: nothing has been written to the calendar yet.
 - **Update pending**: notices are still queued.
 - **Synced**: the last write succeeded or was already up to date. The admin page shows when.
+- **Syncing**: a notice is being written now. The outbox is shared by every connection, and it does not record which connection a match write is for, so **Syncing** and **Update pending** describe the worker's queue, not one calendar's. Per-connection queue depth is not tracked.
+- **Connecting...** appears on the button while the provider's sign-in page opens. It is not stored.
 - **Sync failed. It will retry.**: the last write failed with a retryable error.
+- **Removed from this match**: shown on one match's row when the admin removed that match from this calendar. **Add this match back** restores it.
 - **Reauthorization required**: Google or Microsoft refused the stored grant. Click **Connect again**. Nothing else is needed.
 - **Disconnect**: the connection is voided and its stored token is blanked. Google's grant is also revoked, best effort. Microsoft has no revoke endpoint in this integration, so the stored token is deleted. The grant can be removed from the Microsoft account's app permissions. Events already on the calendar stay until someone deletes them.
 
@@ -162,17 +227,18 @@ No code deploy is required for that rollback. Dropping the new tables is only fo
 
 `GET /notifications/telemetry` (admin sign-in) returns two parts:
 
-- `process_counts`: counters for this API process, such as `delivery.sent.push`, `delivery.failed.google.rate_limited`, `connection.revoked.microsoft`, `outbox.retry`, and `push.subscription_gone`. They reset when the process restarts.
+- `process_counts`: counters for this API process, such as `delivery.sent.push`, `delivery.failed.google.rate_limited`, `connection.revoked.microsoft`, `outbox.retry`, `push.subscription_gone`, `push.subscribed`, `push.unsubscribed`, `push.rotated`, `calendar.feed_created`, `calendar.feed_requested`, and `calendar.feed_revoked`. Per notification type: `delivery.attempt.<channel>.<event>` for every send attempt and `push.accepted.<event>` when the push service accepts a message. Per calendar write: `calendar.event.<provider>.created`, `.updated`, or `.cancelled`, and `calendar.withdrawn.<provider>` for a removed match. A push service accepting a message does not mean the device showed it; browsers report no display or read receipt. They reset when the process restarts. Counters never carry an endpoint, a token, or a provider body.
+- `latency`: the count, average, and worst seconds from a notice being queued. `outbox.age_at_done` is measured when the whole notice is done; `calendar.sync_latency` when one calendar write or removal succeeds. A growing worst case means the worker is behind.
 - `delivery_health`: read from the database. It holds `backlog` (pending or leased notices), `dead`, `oldest_pending_seconds`, `active_subscriptions`, `active_connections`, `connections_needing_reauth`, and `failed_last_24h` and `sent_last_24h`.
 
-There is no dashboard or alerting service in this deployment. Two things are worth watching: `oldest_pending_seconds` above a few minutes means the worker is not draining, and a rising `dead` count means a provider keeps rejecting writes.
+There is no dashboard or alerting service in this deployment, and the repositories contain no observability stack to add one to, so none was built. Two things are worth watching: `oldest_pending_seconds` above a few minutes means the worker is not draining, and a rising `dead` count means a provider keeps rejecting writes.
 
 ## Cost and quotas
 
 - **Web Push** uses each browser's own push service and has no per-message fee. A payload is a few hundred bytes, well under the 4 KB limit. One notice sends one message per subscribed device that wants that kind of alert.
 - **Calendar feed**: one database read per fetch, cached privately for 60 seconds.
 - **Google Calendar API**: free within the project's quotas. Check them in Google Cloud Console under APIs & Services, Quotas. There is a per-project daily limit and a per-user per-minute limit. The worker writes once per connected admin per match change, sends at most 20 notices per pass, and backs off on 429.
-- **Microsoft Graph**: free. Outlook limits each app to about 10,000 requests per mailbox per 10 minutes and a few concurrent requests. A 429 with `Retry-After` is honoured.
+- **Microsoft Graph**: no charge for these calls. Graph sets per-app and per-mailbox request limits, and they can change. Check the current figures in Microsoft's documentation before you rely on a number. A 429 with `Retry-After` is honoured.
 
 Volume for a typical season, assuming 60 matches, about 5 changes each, and 3 connected admins: about 900 calendar writes per season, plus up to 200 per new connection for the backfill. Unchanged events are skipped by content hash. No extra host is required.
 
@@ -200,6 +266,14 @@ VAPID keys, a Google OAuth client, and a Microsoft OAuth client are not in this 
 | Google and Microsoft OAuth (state, PKCE), writes, backfill | Tested against documented responses; needs OAuth clients; behind flags |
 | Season schedule rebuild reaches calendars and devices | Validated: unit tests, plus a SQL test that deletes a synced match and queues its withdrawal |
 | Match create, update, reset, and delete queue notices | Validated by route-level tests |
+| Team and season rename reach calendars and the feed | Validated: route and unit tests, plus SQL tests on the scratch database; no device alert, by design |
+| Remove one match from a connected calendar, and add it back | Validated: unit tests for the worker and routes, plus SQL tests on the scratch database. The Web row action is in the match page's Add to calendar menu; the live Google and Outlook delete needs OAuth clients |
+| Player changes reach calendars | Not shown in events, by design: the event has no player data |
+| Starting-soon alert | Match-day reminder at 09:00 IST, by design: no kickoff time is stored |
+| Postponed alert | Covered by the date change, by design: no postponed status is stored |
+| Calendar sync-problem alert (push) | Not sent. Sync state shows on the admin page only: connections belong to admins, and push subscriptions are not tied to an account |
+| Test-send action | Not provided, so there is no endpoint to rate-limit |
+| VAPID, Google, and Microsoft setup steps and scopes | Documented in Setup above; not run against live providers |
 | Live alerts and live calendar updates | Validated by tests; behind `CPL_PUSH_LIVE_ENABLED` and `CPL_CALENDAR_LIVE_UPDATES_ENABLED` |
 | Feed token hashed at rest, redacted in API access logs | Validated by unit and SQL tests; proxy logs are the host's to check |
 | iOS Home Screen push | Fallback message shown; not tried on a device |
