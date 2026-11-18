@@ -1,6 +1,22 @@
 from fastapi import HTTPException
 from repositories.stats_repository import StatsRepository
 
+NO_MATCH_SCHEDULED = "No match scheduled for the season."
+NO_MATCH_PLAYED = "No match has been played in this season."
+NO_STRIKER_STATS = "No player stats found for completed league-stage matches in this season."
+STRIKER_READY = "Top coin potters fetched successfully"
+
+
+def golden_striker_state(scheduled: int, played: int, player_count: int) -> tuple[str, bool]:
+    """The Golden Striker is shown only after at least one match has been played."""
+    if int(played or 0) <= 0 and int(scheduled or 0) <= 0:
+        return NO_MATCH_SCHEDULED, False
+    if int(played or 0) <= 0:
+        return NO_MATCH_PLAYED, False
+    if int(player_count or 0) <= 0:
+        return NO_STRIKER_STATS, False
+    return STRIKER_READY, True
+
 
 class StatsService:
 
@@ -38,6 +54,11 @@ class StatsService:
                 detail="Invalid season id"
             )
         return self.repository.get_season_player_stats(season_id)
+
+    def match_counts(self, season_id: int) -> tuple[int, int]:
+        if season_id <= 0:
+            raise HTTPException(status_code=400, detail="Invalid season id")
+        return self.repository.match_counts(season_id)
 
     def has_completed_league_matches(self, season_id: int):
         if season_id <= 0:

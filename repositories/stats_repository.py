@@ -159,6 +159,21 @@ class StatsRepository:
         ]
         return SeasonPlayerStatsResponse(data_available=True, players=players)
 
+    def match_counts(self, season_id: int) -> tuple[int, int]:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                COUNT(*) AS Scheduled,
+                SUM(CASE WHEN Status = %s THEN 1 ELSE 0 END) AS Played
+            FROM tblMatches
+            WHERE SeasonId = %s AND Void = 0
+            """,
+            (MatchStatus.Played.value, season_id),
+        )
+        row = cursor.fetchone() or {}
+        return int(row.get("Scheduled") or 0), int(row.get("Played") or 0)
+
     def has_completed_league_matches(self, season_id: int) -> bool:
         query = """
             SELECT 1

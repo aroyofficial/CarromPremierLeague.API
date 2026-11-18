@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from core.database import get_db
 from core.response import ApiResponse
 from repositories.stats_repository import StatsRepository
-from services.stats_service import StatsService
+from services.stats_service import NO_MATCH_SCHEDULED, StatsService, golden_striker_state
 from controllers.stats_controller import StatsController
 from schemas.stats_schema import (
     HeadToHeadResponse,
@@ -51,23 +51,18 @@ def get_season_top_coin_potters(
     limit: int = 3,
     controller: StatsController = Depends(get_controller)
 ):
-    players = controller.get_season_top_coin_potters(season_id, limit)
-    is_league_stage_completed = controller.is_league_stage_completed(season_id)
-    message = "Top coin potters fetched successfully"
-
-    if not players:
-        if controller.has_completed_league_matches(season_id):
-            message = (
-                "No player stats found for completed league-stage matches in this season"
-            )
-        else:
-            message = "No completed league-stage matches found for this season"
+    scheduled, played = controller.match_counts(season_id)
+    players = controller.get_season_top_coin_potters(season_id, limit) if played else []
+    message, show = golden_striker_state(scheduled, played, len(players))
+    if not show:
+        players = []
 
     return ApiResponse(
         success=True,
         message=message,
         data=SeasonTopCoinPottersResponse(
-            is_league_stage_completed=is_league_stage_completed,
+            is_league_stage_completed=controller.is_league_stage_completed(season_id) if show else False,
+            matches_played=played,
             players=players
         )
     )
@@ -83,7 +78,7 @@ def get_season_player_stats(
 ):
     result = controller.get_season_player_stats(season_id)
     if not result.data_available:
-        message = "Data is not available for this season"
+        message = NO_MATCH_SCHEDULED
     elif not result.players:
         message = "No players are listed for this season"
     else:

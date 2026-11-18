@@ -30,6 +30,7 @@ class TopCoinPotterResponse(BaseModel):
 
 class SeasonTopCoinPottersResponse(BaseModel):
     is_league_stage_completed: bool
+    matches_played: int = 0
     players: List[TopCoinPotterResponse]
 
 

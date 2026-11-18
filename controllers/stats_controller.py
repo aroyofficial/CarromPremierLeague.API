@@ -15,6 +15,9 @@ class StatsController:
     def get_season_player_stats(self, season_id: int):
         return self.service.get_season_player_stats(season_id)
 
+    def match_counts(self, season_id: int) -> tuple[int, int]:
+        return self.service.match_counts(season_id)
+
     def has_completed_league_matches(self, season_id: int):
         return self.service.has_completed_league_matches(season_id)
 
