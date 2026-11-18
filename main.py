@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import pyodbc
@@ -25,6 +26,12 @@ from routes.media_routes import router as media_router
 from routes.gallery_routes import router as gallery_router
 from routes.assistant_routes import router as assistant_router
 from routes.realtime_routes import router as realtime_router
+from routes.notify_routes import router as notify_router
+from services.notify.flags import load_flags
+from services.notify.redact import install_feed_token_filter
+from services.notify.worker import run_notify_worker
+
+install_feed_token_filter()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -41,7 +48,19 @@ async def lifespan(app: FastAPI):
         ensure_seed_admin(connection)
     finally:
         connection.close()
+    stop_notify = asyncio.Event()
+    notify_task = None
+    flags = load_flags()
+    if flags.worker_enabled and flags.delivery_ready():
+        notify_task = asyncio.create_task(run_notify_worker(stop_notify))
     yield
+    if notify_task is not None:
+        stop_notify.set()
+        notify_task.cancel()
+        try:
+            await notify_task
+        except asyncio.CancelledError:
+            pass
 
 app = FastAPI(lifespan=lifespan)
 add_exception_handlers(app)
@@ -68,3 +87,4 @@ app.include_router(media_router)
 app.include_router(gallery_router)
 app.include_router(assistant_router)
 app.include_router(realtime_router)
+app.include_router(notify_router)

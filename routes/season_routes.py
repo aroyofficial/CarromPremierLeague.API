@@ -6,6 +6,7 @@ from core.response import ApiResponse
 from routes.auth_routes import require_permission
 from controllers.season_controller import SeasonController
 from schemas.schedule_schema import SeasonScheduleResponse
+from services.notify.enqueue import publish_schedule_rebuild, season_scheduled
 from schemas.season_schema import (
     SeasonCreateRequest,
     SeasonUpdateRequest,
@@ -135,7 +136,9 @@ def remove_season_team(season_id: int, team_id: int, db=Depends(get_db)):
     dependencies=[Depends(require_permission("matches.create"))]
 )
 def schedule_season_matches(season_id: int, db=Depends(get_db)):
+    removed = season_scheduled(db, season_id)
     result = SeasonController(db).schedule_matches(season_id)
+    publish_schedule_rebuild(db, season_id, removed)
     message = "League matches scheduled" if result.removed == 0 else "League matches rescheduled"
     return ApiResponse(success=True, message=message, data=result)
 

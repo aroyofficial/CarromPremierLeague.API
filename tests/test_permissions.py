@@ -61,6 +61,13 @@ class CatalogTests(unittest.TestCase):
             ("POST", "/auth/mfa/passkey-options"),
             ("POST", "/auth/mfa/verify"),
             ("POST", "/assistant/public/chat"),
+            # Public match alerts and calendar feeds: a device or feed link is the capability,
+            # not a login. Each route rate-limits or checks the endpoint/feed token itself.
+            ("POST", "/notifications/subscriptions"),
+            ("PUT", "/notifications/subscriptions"),
+            ("DELETE", "/notifications/subscriptions"),
+            ("POST", "/calendar/feeds"),
+            ("DELETE", "/calendar/feeds/{token}"),
         }
         routes = self._api_routes()
         self.assertGreater(len(routes), 40)

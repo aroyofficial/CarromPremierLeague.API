@@ -23,6 +23,11 @@ class MatchRepository:
 
     def __init__(self, db):
         self.db = db
+        self.notices: list[tuple[str, int]] = []
+
+    def _note(self, kind: str, match_id) -> None:
+        if match_id:
+            self.notices.append((kind, int(match_id)))
 
     @staticmethod
     def _map(row) -> Optional[MatchResponse]:
@@ -187,6 +192,7 @@ class MatchRepository:
                     season_id,
                 ),
             )
+            self._note("created", cursor.lastrowid)
             order += 1
 
     @staticmethod
@@ -243,6 +249,7 @@ class MatchRepository:
                 )
                 existing["Team1"] = team1_id
                 existing["Team2"] = team2_id
+                self._note("teams", existing["Id"])
             return existing
 
         cursor = self.db.cursor()
@@ -266,6 +273,7 @@ class MatchRepository:
 
         if not cursor.lastrowid:
             return None
+        self._note("created", cursor.lastrowid)
         created = self.get_by_id(cursor.lastrowid)
         return {
             "Id": created.id,
@@ -565,7 +573,7 @@ class MatchRepository:
             "toss_outcome": "TossOutcome"
         }
 
-        fields = []
+        fields = ["UpdatedAt = SYSUTCDATETIME()"]
         values = []
 
         for key, value in update_data.items():
@@ -623,7 +631,8 @@ class MatchRepository:
                 Extra = NULL,
                 GoldenStrike = 0,
                 StartedAt = NULL,
-                ExtraStartedAt = NULL
+                ExtraStartedAt = NULL,
+                UpdatedAt = SYSUTCDATETIME()
             WHERE Id = %s AND Void = 0
             """,
             (MatchStatus.Scheduled.value, 3, 3, match_id),
@@ -634,7 +643,8 @@ class MatchRepository:
     def soft_delete(self, match_id: int) -> bool:
         query = """
             UPDATE tblMatches
-            SET Void = 1
+            SET Void = 1,
+                UpdatedAt = SYSUTCDATETIME()
             WHERE Id = %s
         """
 

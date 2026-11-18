@@ -8,4 +8,5 @@ cloudinary
 httpx
 webauthn>=2.2,<3
 cryptography
+pywebpush>=2.0,<3
 Pillow>=10.0
