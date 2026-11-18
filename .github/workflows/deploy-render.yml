@@ -54,6 +54,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           CPL_SMTP_HOST: ${{ secrets.CPL_SMTP_HOST }}
           CPL_SMTP_PORT: ${{ secrets.CPL_SMTP_PORT }}
           CPL_SMTP_USERNAME: ${{ secrets.CPL_SMTP_USERNAME }}
@@ -70,6 +71,7 @@ jobs:
           CPL_GEMINI_MODEL: ${{ vars.CPL_GEMINI_MODEL }}
           CPL_GROQ_MODEL: ${{ vars.CPL_GROQ_MODEL }}
           CPL_OPENROUTER_MODEL: ${{ vars.CPL_OPENROUTER_MODEL }}
+          CPL_CURSOR_MODEL: ${{ vars.CPL_CURSOR_MODEL }}
         run: |
           set -euo pipefail
           set_env_var() {
@@ -99,7 +101,7 @@ jobs:
             echo "::warning::Repository secret CLOUDINARY_URL is not set; picture uploads stay disabled on Render."
           fi
           assistant_keys=0
-          for pair in GEMINI_API_KEY:CPL_GEMINI_API_KEY GROQ_API_KEY:CPL_GROQ_API_KEY OPENROUTER_API_KEY:CPL_OPENROUTER_API_KEY; do
+          for pair in GEMINI_API_KEY:CPL_GEMINI_API_KEY GROQ_API_KEY:CPL_GROQ_API_KEY OPENROUTER_API_KEY:CPL_OPENROUTER_API_KEY CURSOR_API_KEY:CPL_CURSOR_API_KEY; do
             secret="${pair%%:*}"
             target="${pair##*:}"
             if [ -n "${!secret}" ]; then
@@ -107,13 +109,13 @@ jobs:
               assistant_keys=$((assistant_keys + 1))
             fi
           done
-          for model in CPL_GEMINI_MODEL CPL_GROQ_MODEL CPL_OPENROUTER_MODEL; do
+          for model in CPL_GEMINI_MODEL CPL_GROQ_MODEL CPL_OPENROUTER_MODEL CPL_CURSOR_MODEL; do
             if [ -n "${!model}" ]; then
               set_env_var "${model}" "${!model}"
             fi
           done
           if [ "${assistant_keys}" = "0" ]; then
-            echo "::warning::No GEMINI_API_KEY, GROQ_API_KEY or OPENROUTER_API_KEY secret is set; the Striker assistant keeps any key already on Render."
+            echo "::warning::No GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY or CURSOR_API_KEY secret is set; the Striker assistant keeps any key already on Render."
           fi
           mail_keys=0
           for pair in CPL_SMTP_HOST:CPL_SMTP_HOST CPL_SMTP_PORT:CPL_SMTP_PORT CPL_SMTP_USERNAME:CPL_SMTP_USERNAME CPL_SMTP_PASSWORD:CPL_SMTP_PASSWORD CPL_SMTP_FROM:CPL_SMTP_FROM CPL_SMTP_FROM_NAME:CPL_SMTP_FROM_NAME CPL_MAIL_PROVIDER:CPL_MAIL_PROVIDER CPL_MAIL_API_KEY:CPL_MAIL_API_KEY CPL_MAIL_FROM:CPL_MAIL_FROM CPL_GMAIL_CLIENT_ID:CPL_GMAIL_CLIENT_ID CPL_GMAIL_CLIENT_SECRET:CPL_GMAIL_CLIENT_SECRET CPL_GMAIL_REFRESH_TOKEN:CPL_GMAIL_REFRESH_TOKEN CPL_PUBLIC_WEB_URL:CPL_PUBLIC_WEB_URL; do

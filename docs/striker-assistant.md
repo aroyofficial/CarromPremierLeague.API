@@ -7,7 +7,7 @@ Striker is a chat assistant for Carrom Premier League. The public site uses it t
 1. Answer only from league data: seasons, teams, players, rosters, matches, schedules, standings, statistics, competition settings, countries and the public gallery. Anything else is politely refused.
 2. On the public site, see only what the public site shows. Hidden seasons, draft gallery items and admin accounts are out of reach.
 3. In the admin console, offer exactly the tools the signed-in admin's permissions allow. Every change is shown as a proposed action and runs only after the admin confirms, either by typing "yes" or by pressing Confirm.
-4. Use Gemini first and fall back to other free providers (Groq, OpenRouter) when Gemini is not configured, rate limited or failing.
+4. Use Gemini first, then Groq, then OpenRouter, then the Cursor Cloud Agents API when that key is set.
 5. Never send a provider key to the browser.
 
 ## Architecture
@@ -20,7 +20,7 @@ Browser (StrikerChat.vue)
   ▼
 routes/assistant_routes.py
   ▼
-services/assistant/engine.py ── providers.py ── Gemini → Groq → OpenRouter
+services/assistant/engine.py ── providers.py ── Gemini → Groq → OpenRouter → Cursor
   │ tool calls
   ▼
 services/assistant/tools.py      catalog: name, endpoint, permission, read or write
@@ -47,7 +47,7 @@ The tools do not query the database directly. Each tool maps to an existing endp
 | 2 | Pydantic → LLM function-schema converter | `services/assistant/schema.py` |
 | 3 | Tool catalog: public reads, admin reads, admin writes, with permissions | `services/assistant/tools.py` |
 | 4 | In-process executor with forwarded auth, visibility filter and caps | `services/assistant/executor.py` |
-| 5 | Providers: Gemini (native function calling) and OpenAI-compatible (Groq, OpenRouter) with fallback | `services/assistant/providers.py` |
+| 5 | Providers: Gemini, OpenAI-compatible Groq and OpenRouter, and Cursor Cloud Agents, with fallback | `services/assistant/providers.py` |
 | 6 | Engine: data-only system prompts, tool loop, signed pending actions, confirm and cancel | `services/assistant/engine.py`, `actions.py` |
 | 7 | Routes and per-address rate limit | `routes/assistant_routes.py` |
 | 8 | Tests | `tests/test_assistant.py` |
@@ -66,8 +66,12 @@ The tools do not query the database directly. Each tool maps to an existing endp
 | `CPL_GROQ_MODEL` | No | `openai/gpt-oss-120b` |
 | `CPL_OPENROUTER_API_KEY` | No | – |
 | `CPL_OPENROUTER_MODEL` | No | `meta-llama/llama-3.3-70b-instruct:free` |
+| `CPL_CURSOR_API_KEY` | No | – |
+| `CPL_CURSOR_MODEL` | No | account default |
 
-The Render deploy workflow copies the repository secrets `GEMINI_API_KEY`, `GROQ_API_KEY` and `OPENROUTER_API_KEY` into those variables when they are set. `GET /assistant/status` reports the assistant as unavailable when no key is configured, a key is rejected, or every configured provider is out of credits. A short rate limit still counts as available. The public site and the admin console hide the widget in that case even when the settings switch is on.
+`CPL_CURSOR_API_KEY` is a Cursor user or service-account key. Striker calls the Cloud Agents API with no repository and does not open a pull request. Each model step is one short run, then the agent is archived. A status check only calls `GET /v1/me`, so it does not start an agent. Cursor is last: Gemini, Groq, and OpenRouter answer first when they can.
+
+The Render deploy workflow copies the repository secrets `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY` and `CURSOR_API_KEY` into those variables when they are set. `GET /assistant/status` reports the assistant as unavailable when no key is configured, a key is rejected, or every configured provider is out of credits. A short rate limit still counts as available. The public site and the admin console hide the widget in that case even when the settings switch is on.
 
 ## Who can see Striker
 

@@ -405,7 +405,7 @@ class RouteTests(unittest.TestCase):
 
     def test_status_reports_a_provider_that_can_answer(self):
         response = self._status(
-            {"GEMINI_API_KEY": "k-secret", "GROQ_API_KEY": None, "OPENROUTER_API_KEY": None},
+            {"GEMINI_API_KEY": "k-secret", "GROQ_API_KEY": None, "OPENROUTER_API_KEY": None, "CURSOR_API_KEY": None},
             lambda _provider: "ok",
         )
         body = response.json()
@@ -415,7 +415,7 @@ class RouteTests(unittest.TestCase):
 
     def test_status_hides_the_assistant_when_credits_are_used_up(self):
         response = self._status(
-            {"GEMINI_API_KEY": None, "GROQ_API_KEY": "k-secret", "OPENROUTER_API_KEY": None},
+            {"GEMINI_API_KEY": None, "GROQ_API_KEY": "k-secret", "OPENROUTER_API_KEY": None, "CURSOR_API_KEY": None},
             lambda _provider: "exhausted",
         )
         self.assertEqual(response.json()["data"]["available"], False)
@@ -423,7 +423,7 @@ class RouteTests(unittest.TestCase):
 
     def test_status_stays_available_when_one_provider_can_answer(self):
         response = self._status(
-            {"GEMINI_API_KEY": "k-secret", "GROQ_API_KEY": "k-secret", "OPENROUTER_API_KEY": None},
+            {"GEMINI_API_KEY": "k-secret", "GROQ_API_KEY": "k-secret", "OPENROUTER_API_KEY": None, "CURSOR_API_KEY": None},
             lambda provider: "exhausted" if provider.name == "gemini" else "ok",
         )
         data = response.json()["data"]
@@ -486,6 +486,93 @@ class RouteTests(unittest.TestCase):
         self.assertFalse(run(assistant_is_enabled(off)))
         self.assertTrue(run(assistant_is_enabled(on)))
         self.assertFalse(run(assistant_is_enabled(unread)))
+
+
+class CursorProviderTests(unittest.TestCase):
+    def test_plain_text_and_tool_json(self):
+        from services.assistant.providers import cursor_reply
+
+        plain = cursor_reply("The season has six teams.")
+        self.assertEqual(plain.text, "The season has six teams.")
+        self.assertEqual(plain.calls, [])
+        reply = cursor_reply(
+            '```json\n{"tool_calls":[{"name":"list_seasons","arguments":{"season_id":3}}]}\n```'
+        )
+        self.assertEqual([call.name for call in reply.calls], ["list_seasons"])
+        self.assertEqual(reply.calls[0].args, {"season_id": 3})
+
+    def test_cursor_is_last_when_its_key_is_set(self):
+        import httpx
+
+        from core.config import settings
+        from services.assistant.providers import configured_providers
+
+        with mock.patch.multiple(
+            settings,
+            GEMINI_API_KEY="g",
+            GROQ_API_KEY=None,
+            OPENROUTER_API_KEY="o",
+            CURSOR_API_KEY="c",
+            CURSOR_MODEL=None,
+        ):
+            names = [provider.name for provider in configured_providers(httpx.AsyncClient())]
+        self.assertEqual(names, ["gemini", "openrouter", "cursor"])
+
+    def test_chat_calls_cursor_without_a_repository(self):
+        import httpx
+
+        from services.assistant.providers import CursorProvider
+
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            if request.method == "POST" and request.url.path == "/v1/agents":
+                return httpx.Response(
+                    200,
+                    json={"agent": {"id": "bc-1"}, "run": {"id": "run-1", "status": "CREATING"}},
+                )
+            if request.method == "GET" and request.url.path == "/v1/agents/bc-1/runs/run-1":
+                return httpx.Response(200, json={"status": "FINISHED", "result": "The season has six teams."})
+            if request.method == "POST" and request.url.path == "/v1/agents/bc-1/archive":
+                return httpx.Response(200, json={"id": "bc-1"})
+            return httpx.Response(500, text="unexpected")
+
+        async def go():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                provider = CursorProvider("crsr_test", "composer-2.5", client)
+                return await provider.session("You are Striker.", [], []).step()
+
+        reply = run(go())
+        self.assertEqual(reply.text, "The season has six teams.")
+        created = next(item for item in seen if item.method == "POST" and item.url.path == "/v1/agents")
+        body = json.loads(created.content)
+        self.assertNotIn("repos", body)
+        self.assertEqual(body["mode"], "plan")
+        self.assertIs(body["autoCreatePR"], False)
+        self.assertEqual(body["model"], {"id": "composer-2.5"})
+        self.assertEqual(created.headers["authorization"], "Bearer crsr_test")
+        self.assertTrue(any(item.url.path == "/v1/agents/bc-1/archive" for item in seen))
+
+    def test_a_rejected_key_is_unavailable_without_creating_an_agent(self):
+        import httpx
+
+        from services.assistant.providers import CursorProvider, ProviderError
+
+        paths = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            paths.append(request.url.path)
+            return httpx.Response(401, text="Invalid API key")
+
+        async def go():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                await CursorProvider("crsr_test", None, client).check()
+
+        with self.assertRaises(ProviderError) as caught:
+            run(go())
+        self.assertEqual(caught.exception.kind, "unavailable")
+        self.assertEqual(paths, ["/v1/me"])
 
 
 if __name__ == "__main__":

@@ -52,6 +52,8 @@ class Settings:
         self.OPENROUTER_MODEL: str = (
             self._get_optional_env("CPL_OPENROUTER_MODEL") or "meta-llama/llama-3.3-70b-instruct:free"
         )
+        self.CURSOR_API_KEY: str | None = self._get_optional_env("CPL_CURSOR_API_KEY")
+        self.CURSOR_MODEL: str | None = self._get_optional_env("CPL_CURSOR_MODEL")
 
         self.SMTP_HOST: str | None = self._get_optional_env("CPL_SMTP_HOST")
         self.SMTP_PORT: int = int(self._get_optional_env("CPL_SMTP_PORT") or "587")

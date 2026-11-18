@@ -1,7 +1,9 @@
 """LLM providers behind one small interface. Keys stay on the server."""
 
+import asyncio
 import contextvars
 import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -95,18 +97,26 @@ def _gemini_schema(node: dict) -> dict:
     return result
 
 
-async def _post(client: httpx.AsyncClient, provider: str, url: str, **kwargs) -> dict:
+async def _exchange(client: httpx.AsyncClient, provider: str, method: str, url: str, **kwargs) -> dict:
     try:
-        response = await client.post(url, timeout=request_timeout.get(), **kwargs)
+        response = await client.request(method, url, timeout=request_timeout.get(), **kwargs)
     except httpx.HTTPError as error:
         raise ProviderError(f"{provider} is unreachable: {type(error).__name__}") from None
     if response.status_code >= 400:
         detail = response.text[:300]
-        raise ProviderError(f"{provider} returned {response.status_code}: {detail}", failure_kind(response.status_code, detail))
+        raise ProviderError(
+            f"{provider} returned {response.status_code}: {detail}", failure_kind(response.status_code, detail)
+        )
+    if not response.content:
+        return {}
     try:
         return response.json()
     except ValueError:
         raise ProviderError(f"{provider} returned a non-JSON response") from None
+
+
+async def _post(client: httpx.AsyncClient, provider: str, url: str, **kwargs) -> dict:
+    return await _exchange(client, provider, "POST", url, **kwargs)
 
 
 class GeminiSession(Session):
@@ -279,6 +289,158 @@ class OpenAICompatibleProvider(Provider):
         return OpenAISession(self, system, history, tools)
 
 
+CURSOR_API = "https://api.cursor.com"
+CURSOR_WAIT_SECONDS = 50
+
+
+def cursor_reply(text: str) -> Reply:
+    """A Cursor run returns either the user's answer or one JSON tool-call object."""
+    raw = (text or "").strip()
+    fenced = raw
+    if raw.startswith("```"):
+        lines = raw.splitlines()[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        fenced = "\n".join(lines).strip()
+    try:
+        data = json.loads(fenced)
+    except ValueError:
+        return Reply(text=raw)
+    if not isinstance(data, dict):
+        return Reply(text=raw)
+    if "tool_calls" in data:
+        calls = []
+        for item in data.get("tool_calls") or []:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            arguments = item.get("arguments")
+            calls.append(
+                ToolCall(
+                    id=uuid.uuid4().hex,
+                    name=str(item["name"]),
+                    args=arguments if isinstance(arguments, dict) else {},
+                )
+            )
+        if calls:
+            return Reply(calls=calls)
+        return Reply(text=raw)
+    for key in ("reply", "text", "answer"):
+        answer = data.get(key)
+        if isinstance(answer, str) and answer.strip():
+            return Reply(text=answer.strip())
+    return Reply(text=raw)
+
+
+class CursorSession(Session):
+    def __init__(self, provider: "CursorProvider", system: str, history: list[dict], tools: list[ToolSpec]):
+        self.provider = provider
+        self.system = system
+        self.turns = [{"role": item["role"], "content": item["content"]} for item in history]
+        self.tools = tools
+
+    def prompt(self, *, allow_tools: bool) -> str:
+        lines = [self.system, "", "Answer the conversation. Do not edit files, open a repository, or write code."]
+        if self.tools and allow_tools:
+            lines.append("To use a tool, reply with only this JSON and no markdown:")
+            lines.append('{"tool_calls":[{"name":"tool_name","arguments":{}}]}')
+            lines.append("Tools:")
+            for tool in self.tools:
+                lines.append(f"- {tool.name}: {tool.description}")
+                lines.append(json.dumps(tool.parameters))
+        else:
+            lines.append("Reply to the user in markdown. Do not call a tool.")
+        lines.append("")
+        lines.append("Conversation:")
+        for turn in self.turns:
+            lines.append(f"{turn['role']}: {turn['content']}")
+        return "\n".join(lines)
+
+    async def step(self, *, allow_tools: bool = True) -> Reply:
+        reply = cursor_reply(await self.provider.complete(self.prompt(allow_tools=allow_tools)))
+        if reply.calls:
+            payload = {"tool_calls": [{"name": call.name, "arguments": call.args} for call in reply.calls]}
+            self.turns.append({"role": "assistant", "content": json.dumps(payload)})
+        else:
+            self.turns.append({"role": "assistant", "content": reply.text})
+        return reply
+
+    def add_results(self, results: list[tuple[ToolCall, dict]]) -> None:
+        for call, result in results:
+            self.turns.append(
+                {
+                    "role": "tool",
+                    "content": json.dumps({"name": call.name, "result": result}, default=str),
+                }
+            )
+
+
+class CursorProvider(Provider):
+    """Cursor Cloud Agents API. Each step is one short run with no repository."""
+
+    name = "cursor"
+    label = "Cursor"
+
+    def __init__(self, api_key: str, model: str | None, client: httpx.AsyncClient):
+        self.api_key = api_key
+        self.model = (model or "").strip() or None
+        self.client = client
+
+    def session(self, system, history, tools) -> Session:
+        return CursorSession(self, system, history, tools)
+
+    async def check(self) -> None:
+        await self._json("GET", "/v1/me")
+
+    async def complete(self, prompt: str) -> str:
+        body: dict[str, Any] = {"prompt": {"text": prompt}, "mode": "plan", "autoCreatePR": False}
+        if self.model:
+            body["model"] = {"id": self.model}
+        created = await self._json("POST", "/v1/agents", json=body)
+        agent = created.get("agent") or {}
+        run = created.get("run") or {}
+        agent_id = agent.get("id")
+        run_id = run.get("id") or agent.get("latestRunId")
+        if not agent_id or not run_id:
+            raise ProviderError("Cursor returned no agent run")
+        try:
+            return await self._wait(agent_id, run_id)
+        finally:
+            await self._quietly("POST", f"/v1/agents/{agent_id}/archive")
+
+    async def _wait(self, agent_id: str, run_id: str) -> str:
+        deadline = time.monotonic() + CURSOR_WAIT_SECONDS
+        while True:
+            run = await self._json("GET", f"/v1/agents/{agent_id}/runs/{run_id}")
+            status = run.get("status")
+            if status == "FINISHED":
+                result = (run.get("result") or "").strip()
+                if not result:
+                    raise ProviderError("Cursor returned an empty answer")
+                return result
+            if status in {"ERROR", "CANCELLED", "EXPIRED"}:
+                raise ProviderError(f"Cursor run {status}")
+            if time.monotonic() >= deadline:
+                await self._quietly("POST", f"/v1/agents/{agent_id}/runs/{run_id}/cancel")
+                raise ProviderError("Cursor did not answer in time")
+            await asyncio.sleep(1.5)
+
+    async def _json(self, method: str, path: str, **kwargs) -> dict:
+        return await _exchange(
+            self.client,
+            "Cursor",
+            method,
+            f"{CURSOR_API}{path}",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            **kwargs,
+        )
+
+    async def _quietly(self, method: str, path: str) -> None:
+        try:
+            await self._json(method, path)
+        except ProviderError:
+            return
+
+
 def configured_providers(client: httpx.AsyncClient) -> list[Provider]:
     """Providers in fallback order. Only those with a key are returned."""
     providers: list[Provider] = []
@@ -312,4 +474,6 @@ def configured_providers(client: httpx.AsyncClient) -> list[Provider]:
                 extra_headers={"X-Title": "CPL Striker"},
             )
         )
+    if settings.CURSOR_API_KEY:
+        providers.append(CursorProvider(settings.CURSOR_API_KEY, settings.CURSOR_MODEL, client))
     return providers

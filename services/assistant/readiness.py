@@ -35,7 +35,11 @@ def cached(name: str) -> str | None:
 async def probe(provider) -> str:
     token = request_timeout.set(PROBE_TIMEOUT)
     try:
-        await provider.session("Reply with ok.", [], []).step(allow_tools=False)
+        check = getattr(provider, "check", None)
+        if check is not None:
+            await check()
+        else:
+            await provider.session("Reply with ok.", [], []).step(allow_tools=False)
         return "ok"
     except ProviderError as error:
         return error.kind
