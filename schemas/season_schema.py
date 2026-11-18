@@ -52,6 +52,11 @@ class LeagueTableStanding(BaseModel):
     head_to_head_wins: int
     golden_strike_wins: int = 0
 
+class SeasonScheduleBuildResponse(BaseModel):
+    removed: int
+    created: int
+
+
 class LeagueTableResponse(BaseModel):
     winner_id: Optional[int] = None
     season_status: int

@@ -125,6 +125,25 @@ class TeamRepository:
         self.db.commit()
         return cursor.rowcount > 0
 
+    def has_assignment(self, team_id: int) -> bool:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM tblSeasonsTeams WHERE TeamId = %s AND Void = 0
+                ) OR EXISTS (
+                    SELECT 1 FROM tblPlayersSeasonsTeams WHERE TeamId = %s AND Void = 0
+                ) OR EXISTS (
+                    SELECT 1 FROM tblMatches
+                    WHERE Void = 0 AND (Team1 = %s OR Team2 = %s)
+                ) THEN 1 ELSE 0 END AS Linked
+            """,
+            (team_id, team_id, team_id, team_id),
+        )
+        row = cursor.fetchone() or {}
+        return int(row.get("Linked") or 0) == 1
+
     def delete(self, team_id: int) -> bool:
         cursor = self.db.cursor()
         cursor.execute("""

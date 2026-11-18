@@ -772,3 +772,60 @@ class MatchRepository:
         rows = cursor.fetchall()
 
         return [self._map_stat(row) for row in rows]
+
+    def replace_unplayed_matches(self, season_id: int, pairs: list[tuple[int, int]], scheduled_date) -> tuple[int, int]:
+        """Delete matches that have not started, then insert the league pairings."""
+        cursor = self.db.cursor()
+        try:
+            cursor.execute(
+                """
+                DELETE FROM tblMatchStats
+                WHERE MatchId IN (
+                    SELECT Id FROM tblMatches
+                    WHERE SeasonId = %s AND Void = 0 AND Status = %s
+                )
+                """,
+                (season_id, MatchStatus.Scheduled.value),
+            )
+            cursor.execute(
+                """
+                DELETE FROM tblMatches
+                WHERE SeasonId = %s AND Void = 0 AND Status = %s
+                """,
+                (season_id, MatchStatus.Scheduled.value),
+            )
+            removed = max(cursor.rowcount, 0)
+            cursor.execute(
+                """
+                SELECT COALESCE(MAX([Order]), 0) AS MaxOrder
+                FROM tblMatches
+                WHERE SeasonId = %s AND Void = 0
+                """,
+                (season_id,),
+            )
+            order = int((cursor.fetchone() or {}).get("MaxOrder") or 0)
+            for team1, team2 in pairs:
+                order += 1
+                cursor.execute(
+                    """
+                    INSERT INTO tblMatches (
+                        Team1, Team2, ScheduledDate, GoldenStrike, Category, Status,
+                        [Order], SeasonId, Outcome, TossOutcome
+                    )
+                    VALUES (%s, %s, %s, 0, %s, %s, %s, %s, 3, 3)
+                    """,
+                    (
+                        team1,
+                        team2,
+                        scheduled_date,
+                        MatchCategory.League.value,
+                        MatchStatus.Scheduled.value,
+                        order,
+                        season_id,
+                    ),
+                )
+            self.db.commit()
+            return removed, len(pairs)
+        except Exception:
+            self.db.rollback()
+            raise

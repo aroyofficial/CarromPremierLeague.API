@@ -1,4 +1,7 @@
 from typing import List, Optional
+
+from fastapi import HTTPException
+
 from repositories.team_repository import TeamRepository
 from schemas.team_schema import (
     TeamCreateRequest,
@@ -25,4 +28,9 @@ class TeamService:
         return self.repository.update(team_id, request)
 
     def delete(self, team_id: int) -> bool:
+        if self.repository.has_assignment(team_id):
+            raise HTTPException(
+                status_code=400,
+                detail="This team is in a season, on a roster, or in a match and cannot be deleted.",
+            )
         return self.repository.delete(team_id)

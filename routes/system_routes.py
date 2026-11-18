@@ -114,6 +114,7 @@ DESCRIPTIONS = {
     ("POST", "/seasons/{season_id}/teams"): "Add a team to a season",
     ("DELETE", "/seasons/{season_id}/teams/{team_id}"): "Remove a team from a season",
     ("GET", "/seasons/{season_id}/schedule"): "Get the match schedule for a season",
+    ("POST", "/seasons/{season_id}/schedule"): "Build or rebuild the league fixtures for an upcoming season",
     ("GET", "/seasons/{season_id}/league-table"): "Get the league table for a season",
     ("GET", "/settings"): "Get competition settings",
     ("PUT", "/settings"): "Update competition settings",

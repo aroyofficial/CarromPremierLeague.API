@@ -310,6 +310,14 @@ ADMIN_WRITES: list[Tool] = [
         "/seasons/{season_id}/teams/{team_id}",
         ("seasons.teams",),
     ),
+    _write(
+        "schedule_season_matches",
+        "Schedule season matches",
+        "Build the league for an upcoming season with at least four teams. Matches that have not started are replaced. In-progress and played matches stay.",
+        "POST",
+        "/seasons/{season_id}/schedule",
+        ("matches.create",),
+    ),
     _write("create_team", "Create team", "Create a team.", "POST", "/teams/", ("teams.create",), body=TeamCreateRequest),
     _write(
         "update_team",

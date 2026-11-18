@@ -13,6 +13,7 @@ from schemas.season_schema import (
     LeagueTableResponse,
     SeasonTeamAddRequest,
     SeasonTeamResponse,
+    SeasonScheduleBuildResponse,
 )
 
 router = APIRouter(prefix="/seasons", tags=["Seasons"])
@@ -126,6 +127,17 @@ def remove_season_team(season_id: int, team_id: int, db=Depends(get_db)):
         message="Team removed from season successfully",
         data=SeasonController(db).remove_team(season_id, team_id)
     )
+
+
+@router.post(
+    "/{season_id}/schedule",
+    response_model=ApiResponse[SeasonScheduleBuildResponse],
+    dependencies=[Depends(require_permission("matches.create"))]
+)
+def schedule_season_matches(season_id: int, db=Depends(get_db)):
+    result = SeasonController(db).schedule_matches(season_id)
+    message = "League matches scheduled" if result.removed == 0 else "League matches rescheduled"
+    return ApiResponse(success=True, message=message, data=result)
 
 
 @router.get(

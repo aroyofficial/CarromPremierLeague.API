@@ -248,6 +248,22 @@ class PlayerRepository:
         self.db.commit()
         return cursor.rowcount > 0
 
+    def has_roster(self, player_id: int) -> bool:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM tblPlayersSeasonsTeams WHERE PlayerId = %s AND Void = 0
+                ) OR EXISTS (
+                    SELECT 1 FROM tblMatchStats WHERE PlayerId = %s AND Void = 0
+                ) THEN 1 ELSE 0 END AS Linked
+            """,
+            (player_id, player_id),
+        )
+        row = cursor.fetchone() or {}
+        return int(row.get("Linked") or 0) == 1
+
     def delete(self, player_id: int) -> bool:
         cursor = self.db.cursor()
         cursor.execute("""

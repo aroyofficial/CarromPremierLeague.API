@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 from fastapi import HTTPException
@@ -7,9 +8,11 @@ from schemas.season_schema import (
     SeasonUpdateRequest,
     SeasonResponse,
     LeagueTableResponse,
+    SeasonScheduleBuildResponse,
     SeasonTeamResponse,
 )
 from repositories.season_repository import SeasonRepository
+from services.league_schedule import plan_league_schedule
 
 
 class SeasonService:
@@ -87,6 +90,18 @@ class SeasonService:
         if not self.repository.remove_team(season_id, team_id):
             raise HTTPException(status_code=404, detail="Team is not part of this season")
         return True
+
+    def schedule_matches(self, season_id: int, match_repository, today=None) -> SeasonScheduleBuildResponse:
+        season = self.get_season(season_id)
+        if today is None:
+            today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+        teams = [team.team_id for team in self.get_teams(season_id)]
+        try:
+            pairs = plan_league_schedule(teams, match_repository.get_all(season_id), season.start_date, today)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        removed, created = match_repository.replace_unplayed_matches(season_id, pairs, season.start_date)
+        return SeasonScheduleBuildResponse(removed=removed, created=created)
 
     def get_league_table(self, season_id: int) -> LeagueTableResponse:
         if season_id <= 0:

@@ -1,5 +1,6 @@
 from typing import List
 from fastapi import HTTPException
+from repositories.match_repository import MatchRepository
 from repositories.schedule_repository import ScheduleRepository
 from repositories.season_repository import SeasonRepository
 from services.season_service import SeasonService
@@ -17,6 +18,7 @@ class SeasonController:
     def __init__(self, db):
         self.repository = SeasonRepository(db)
         self.schedule_repository = ScheduleRepository(db)
+        self.match_repository = MatchRepository(db)
         self.service = SeasonService(self.repository)
 
     def create(self, request: SeasonCreateRequest) -> SeasonResponse:
@@ -43,6 +45,9 @@ class SeasonController:
 
     def remove_team(self, season_id: int, team_id: int) -> bool:
         return self.service.remove_team(season_id, team_id)
+
+    def schedule_matches(self, season_id: int):
+        return self.service.schedule_matches(season_id, self.match_repository)
 
     def get_league_table(self, season_id: int) -> LeagueTableResponse:
         return self.service.get_league_table(season_id)

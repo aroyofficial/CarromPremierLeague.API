@@ -136,4 +136,9 @@ class PlayerService:
         existing = self.repository.get_by_id(player_id)
         if not existing:
             raise HTTPException(status_code=404, detail="Player not found.")
+        if self.repository.has_roster(player_id):
+            raise HTTPException(
+                status_code=400,
+                detail="This player is on a team roster or has match scores and cannot be deleted.",
+            )
         return self.repository.delete(player_id)
