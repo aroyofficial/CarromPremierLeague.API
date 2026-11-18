@@ -58,6 +58,7 @@ class MatchService:
             colour_cleared=self._colour_cleared(match_id) if completing else False,
             regulation_seconds=clock.regulation_minutes * 60,
             extra_seconds=clock.extra_minutes * 60,
+            start_on_scheduled_day=clock.start_on_scheduled_day,
         )
         match = self.repository.update(match_id, request)
         if not match:

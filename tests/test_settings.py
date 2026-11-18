@@ -1,5 +1,6 @@
 from schemas.settings_schema import CompetitionSettings
 from services.settings_service import SettingsService, queen_needs_cover
+import unittest
 
 
 class TestQueenCover:
@@ -43,3 +44,34 @@ class TestAssistantSwitch:
         assert result.assistant_enabled is False
         assert result.queen_needs_cover is False
         assert saved["settings"].assistant_enabled is False
+
+
+class TestStartOnScheduledDay(unittest.TestCase):
+    def test_the_switch_stays_off_when_a_client_omits_it(self):
+        settings = CompetitionSettings(
+            regulation_minutes=15,
+            extra_minutes=5,
+            league_queen=False,
+            queen_needs_cover=False,
+        )
+        self.assertFalse(settings.start_on_scheduled_day)
+
+    def test_update_stores_the_switch(self):
+        saved = {}
+
+        class Repository:
+            def save(self, settings):
+                saved["settings"] = settings
+                return settings
+
+        result = SettingsService(Repository()).update(
+            CompetitionSettings(
+                regulation_minutes=15,
+                extra_minutes=5,
+                league_queen=False,
+                queen_needs_cover=False,
+                start_on_scheduled_day=True,
+            )
+        )
+        self.assertTrue(result.start_on_scheduled_day)
+        self.assertTrue(saved["settings"].start_on_scheduled_day)

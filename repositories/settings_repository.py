@@ -5,6 +5,7 @@ DEFAULTS = CompetitionSettings(
     extra_minutes=5,
     league_queen=False,
     queen_needs_cover=False,
+    start_on_scheduled_day=False,
     assistant_public_enabled=True,
     assistant_admin_enabled=True,
 )
@@ -24,6 +25,7 @@ class SettingsRepository:
                 ExtraMinutes,
                 LeagueQueen,
                 QueenNeedsCover,
+                StartOnScheduledDay,
                 AssistantPublicEnabled,
                 AssistantAdminEnabled
             FROM tblSettings
@@ -37,6 +39,7 @@ class SettingsRepository:
                 extra_minutes=DEFAULTS.extra_minutes,
                 league_queen=DEFAULTS.league_queen,
                 queen_needs_cover=DEFAULTS.queen_needs_cover,
+                start_on_scheduled_day=DEFAULTS.start_on_scheduled_day,
                 assistant_public_enabled=DEFAULTS.assistant_public_enabled,
                 assistant_admin_enabled=DEFAULTS.assistant_admin_enabled,
             )
@@ -45,6 +48,7 @@ class SettingsRepository:
             extra_minutes=int(row["ExtraMinutes"]),
             league_queen=bool(row["LeagueQueen"]),
             queen_needs_cover=bool(row["QueenNeedsCover"]),
+            start_on_scheduled_day=bool(row["StartOnScheduledDay"]),
             assistant_public_enabled=bool(row["AssistantPublicEnabled"]),
             assistant_admin_enabled=bool(row["AssistantAdminEnabled"]),
         )
@@ -58,6 +62,7 @@ class SettingsRepository:
                 ExtraMinutes = %s,
                 LeagueQueen = %s,
                 QueenNeedsCover = %s,
+                StartOnScheduledDay = %s,
                 AssistantEnabled = %s,
                 AssistantPublicEnabled = %s,
                 AssistantAdminEnabled = %s,
@@ -69,6 +74,7 @@ class SettingsRepository:
                 settings.extra_minutes,
                 int(settings.league_queen),
                 int(settings.queen_needs_cover),
+                int(settings.start_on_scheduled_day),
                 int(settings.assistant_enabled),
                 int(settings.assistant_public_enabled),
                 int(settings.assistant_admin_enabled),
@@ -79,15 +85,16 @@ class SettingsRepository:
                 """
                 INSERT INTO tblSettings (
                     Id, RegulationMinutes, ExtraMinutes, LeagueQueen, QueenNeedsCover,
-                    AssistantEnabled, AssistantPublicEnabled, AssistantAdminEnabled
+                    StartOnScheduledDay, AssistantEnabled, AssistantPublicEnabled, AssistantAdminEnabled
                 )
-                VALUES (1, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (1, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     settings.regulation_minutes,
                     settings.extra_minutes,
                     int(settings.league_queen),
                     int(settings.queen_needs_cover),
+                    int(settings.start_on_scheduled_day),
                     int(settings.assistant_enabled),
                     int(settings.assistant_public_enabled),
                     int(settings.assistant_admin_enabled),

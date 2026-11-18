@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 import unittest
+from datetime import date
 
 from fastapi import HTTPException
 
@@ -105,6 +106,36 @@ class MatchLifecycleRuleTests(unittest.TestCase):
                 },
             )
         self.assertIn("15-minute", raised.exception.detail)
+
+    def test_a_match_starts_only_on_its_scheduled_day_when_the_setting_is_on(self):
+        match = live_match(MatchCategory.League)
+        match.status = MatchStatus.Scheduled.value
+        match.scheduled_date = date(2026, 12, 27)
+        validate_lifecycle_update(
+            match,
+            {"status": MatchStatus.InProgress.value},
+            start_on_scheduled_day=True,
+            today=date(2026, 12, 27),
+        )
+        with self.assertRaises(HTTPException) as raised:
+            validate_lifecycle_update(
+                match,
+                {"status": MatchStatus.InProgress.value},
+                start_on_scheduled_day=True,
+                today=date(2026, 12, 26),
+            )
+        self.assertIn("scheduled date", raised.exception.detail)
+
+    def test_a_match_can_start_on_another_day_when_the_setting_is_off(self):
+        match = live_match(MatchCategory.League)
+        match.status = MatchStatus.Scheduled.value
+        match.scheduled_date = date(2026, 12, 27)
+        validate_lifecycle_update(
+            match,
+            {"status": MatchStatus.InProgress.value},
+            start_on_scheduled_day=False,
+            today=date(2026, 12, 26),
+        )
 
     def test_knockout_can_finish_during_extra_time_once_a_team_reaches_nine(self):
         validate_lifecycle_update(

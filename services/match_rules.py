@@ -1,3 +1,5 @@
+from datetime import date, datetime, timedelta, timezone
+
 from enums.match_category import MatchCategory
 from enums.match_outcome import MatchOutcome
 from enums.match_status import MatchStatus
@@ -6,6 +8,7 @@ from fastapi import HTTPException
 
 REGULATION_SECONDS = 15 * 60
 EXTRA_SECONDS = 5 * 60
+LEAGUE_ZONE = timezone(timedelta(hours=5, minutes=30))
 
 KNOCKOUT_CATEGORIES = frozenset(
     {
@@ -21,12 +24,26 @@ def is_knockout(category: int) -> bool:
     return category in KNOCKOUT_CATEGORIES
 
 
+def league_today() -> date:
+    return datetime.now(LEAGUE_ZONE).date()
+
+
+def _calendar_day(value) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    return value
+
+
 def validate_lifecycle_update(
     match,
     update_data: dict,
     colour_cleared: bool = False,
     regulation_seconds: int = REGULATION_SECONDS,
     extra_seconds: int = EXTRA_SECONDS,
+    start_on_scheduled_day: bool = False,
+    today: date | None = None,
 ) -> None:
     """Reject match state changes that do not follow the competition rules."""
     requested_status = update_data.get("status", match.status)
@@ -58,6 +75,11 @@ def validate_lifecycle_update(
     if current_status == MatchStatus.Scheduled.value and requested_status == MatchStatus.InProgress.value:
         if not match.team1 or not match.team2:
             raise HTTPException(status_code=400, detail="Both teams must be assigned before starting a match.")
+        if start_on_scheduled_day and _calendar_day(getattr(match, "scheduled_date", None)) != (today or league_today()):
+            raise HTTPException(
+                status_code=400,
+                detail="This match can be started only on its scheduled date.",
+            )
 
     if requested_status != MatchStatus.Played.value:
         _validate_in_progress_update(match, update_data, extra_seconds=extra_seconds)

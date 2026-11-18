@@ -6,6 +6,8 @@ class CompetitionSettings(BaseModel):
     extra_minutes: int = Field(ge=1, le=10)
     league_queen: bool
     queen_needs_cover: bool
+    # Off leaves a match startable on any day. On allows the start only on its scheduled date.
+    start_on_scheduled_day: bool = False
     # Striker has one switch for the public site and one for the admin console.
     assistant_public_enabled: bool | None = None
     assistant_admin_enabled: bool | None = None
