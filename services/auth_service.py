@@ -128,8 +128,14 @@ class AuthService:
         if missing:
             raise HTTPException(status_code=400, detail=missing_parent_message(missing))
 
+    def _phone_verification_enabled(self) -> bool:
+        return bool(getattr(getattr(self.phone_otp, "sender", None), "configured", False))
+
     def _with_permissions(self, admin: AdminResponse) -> AdminResponse:
-        return admin.model_copy(update={"permissions": self.permissions.codes_for(admin.id)})
+        return admin.model_copy(update={
+            "permissions": self.permissions.codes_for(admin.id),
+            "phone_verification_enabled": self._phone_verification_enabled(),
+        })
 
     def _ensure_other_manager(self, admin: AdminResponse) -> None:
         holders = self.permissions.active_holder_ids(MANAGE_PERMISSIONS, lock=True)
@@ -460,6 +466,7 @@ class AuthService:
             email=record.get("Email"),
             avatar_url=record.get("AvatarUrl"),
             phone_verified=record.get("PhoneVerifiedAt") is not None,
+            phone_verification_enabled=self._phone_verification_enabled(),
         )
 
     def list_admins(self) -> list[AdminResponse]:

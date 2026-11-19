@@ -89,6 +89,8 @@ class PhoneOtpTests(unittest.TestCase):
             disabled.request_phone_code(self.admin.id, "+91", PHONE, self.current)
         self.assertEqual(ctx.exception.status_code, 503)
         self.assertNotIn(E164, str(ctx.exception.detail))
+        self.assertFalse(disabled.get_admin(self.admin.id).phone_verification_enabled)
+        self.assertTrue(self.service.get_admin(self.admin.id).phone_verification_enabled)
 
     def test_dev_sender_is_never_used_outside_dev(self):
         with mock.patch.object(settings, "PHONE_OTP_PROVIDER", "dev"), mock.patch.object(settings, "APP_ENV", "prod"):

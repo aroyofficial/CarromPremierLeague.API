@@ -24,6 +24,12 @@ class CanonicalPhoneTests(unittest.TestCase):
         self.assertEqual(canonicalize("+44", "0044 7700 900123"), ("+44", "7700900123", "+447700900123"))
         self.assertEqual(canonicalize("+44", "+44 (0)20 7946 0958"), ("+44", "2079460958", "+442079460958"))
 
+    def test_more_than_ten_digits_is_rejected(self):
+        with self.assertRaises(PhoneNumberError):
+            canonicalize("+44", "77009001234")
+        with self.assertRaises(PhoneNumberError):
+            canonicalize("+91", "90000000111")
+
     def test_a_short_or_non_numeric_number_is_rejected(self):
         for number in ("900000001", "90000000111", "90000-0001", "abcdefghij"):
             with self.assertRaises(PhoneNumberError):

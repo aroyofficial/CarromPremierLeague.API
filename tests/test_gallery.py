@@ -1,6 +1,7 @@
 import io
 import struct
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from tests import test_auth_service as fakes  # noqa: F401  (sets the environment before app imports)
@@ -493,3 +494,13 @@ class GalleryRuleTests(unittest.TestCase):
         self.assertTrue(clip.url.endswith(".mp4"))
         self.service.delete(clip.id, self.curator)
         self.assertTrue(self.storage.deleted[0].startswith("cpl/videos/"))
+
+    def test_taken_on_keeps_the_clock_time(self):
+        photo = self._link()
+        when = datetime(2026, 11, 19, 18, 45)
+        saved = self.service.update(photo.id, GalleryUpdateRequest(taken_on=when), self.curator, {"taken_on"})
+        self.assertEqual(saved.taken_on, when)
+        from_date = GalleryUpdateRequest.model_validate({"taken_on": "2026-03-01"})
+        self.assertEqual(from_date.taken_on, datetime(2026, 3, 1, 0, 0))
+        from_clock = GalleryUpdateRequest.model_validate({"taken_on": "2026-11-19T18:45:00"})
+        self.assertEqual(from_clock.taken_on, when)

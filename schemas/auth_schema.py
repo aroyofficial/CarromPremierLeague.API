@@ -245,6 +245,7 @@ class AdminResponse(BaseModel):
     must_change_password: bool = False
     password_changed_at: datetime | None = None
     phone_verified: bool = False
+    phone_verification_enabled: bool = False
 
 
 class PhoneCodeRequest(BaseModel):

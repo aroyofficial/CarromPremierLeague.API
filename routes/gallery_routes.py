@@ -1,6 +1,4 @@
-from datetime import date
-
-from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.responses import Response as RawResponse
 
 from core.database import get_db
@@ -18,6 +16,7 @@ from schemas.gallery_schema import (
     GalleryPhoto,
     GallerySeason,
     GalleryUpdateRequest,
+    parse_taken_on,
 )
 from services.gallery_service import GalleryService
 
@@ -106,9 +105,13 @@ def create_gallery(
     alt_text: str | None = Form(None),
     width: int | None = Form(None),
     height: int | None = Form(None),
-    taken_on: date | None = Form(None),
+    taken_on: str | None = Form(None),
     service: GalleryService = Depends(get_service),
 ):
+    try:
+        taken = parse_taken_on(taken_on)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Taken on must be a date or a date and time.") from error
     photo = service.create(
         admin,
         file=file,
@@ -118,7 +121,7 @@ def create_gallery(
         alt_text=alt_text,
         width=width,
         height=height,
-        taken_on=taken_on,
+        taken_on=taken,
     )
     return ApiResponse(success=True, message="Saved as a draft.", data=photo)
 

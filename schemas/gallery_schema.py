@@ -1,7 +1,28 @@
-from datetime import date
-from typing import Literal, Optional
+from datetime import date, datetime, time
+from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
+
+
+def parse_taken_on(value):
+    """A gallery time is the clock time picked in the admin, with no zone conversion."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None, microsecond=0)
+    if isinstance(value, date):
+        return datetime.combine(value, time.min)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if len(text) == 10:
+            return datetime.combine(date.fromisoformat(text), time.min)
+        return datetime.fromisoformat(text).replace(tzinfo=None, microsecond=0)
+    raise ValueError("Taken on must be a date or a date and time.")
+
+
+TakenOn = Annotated[Optional[datetime], BeforeValidator(parse_taken_on)]
 
 
 class GalleryPhoto(BaseModel):
@@ -15,7 +36,7 @@ class GalleryPhoto(BaseModel):
     height: int
     caption: Optional[str] = None
     alt_text: Optional[str] = None
-    taken_on: Optional[date] = None
+    taken_on: TakenOn = None
     sort_order: int = 0
     is_cover: bool = False
     is_published: bool = False
@@ -37,7 +58,7 @@ class GallerySeason(BaseModel):
 class GalleryUpdateRequest(BaseModel):
     caption: Optional[str] = None
     alt_text: Optional[str] = None
-    taken_on: Optional[date] = None
+    taken_on: TakenOn = None
     is_published: Optional[bool] = None
     season_ids: Optional[list[int]] = None
     clear_taken_on: bool = False

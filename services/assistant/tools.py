@@ -509,7 +509,7 @@ ADMIN_WRITES: list[Tool] = [
                 "season_ids": string("Comma-separated season IDs to tag."),
                 "caption": string("Caption."),
                 "alt_text": string("Alt text."),
-                "taken_on": string("Date as YYYY-MM-DD."),
+                "taken_on": string("Date and time as YYYY-MM-DDTHH:mm:ss. A date alone is midnight."),
             },
             ["url"],
         ),

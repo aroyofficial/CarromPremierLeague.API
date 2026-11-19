@@ -1,7 +1,6 @@
 import logging
 import re
 import struct
-from datetime import date, datetime
 from urllib.parse import urlparse
 
 from fastapi import HTTPException, UploadFile
@@ -17,6 +16,7 @@ from schemas.gallery_schema import (
     GalleryPhoto,
     GallerySeason,
     GalleryUpdateRequest,
+    parse_taken_on,
 )
 from services.media_service import MAX_IMAGE_BYTES, fetch_public_media, image_format, normalize_picture_link
 
@@ -335,7 +335,7 @@ class GalleryService:
         alt_text: str | None,
         width: int | None,
         height: int | None,
-        taken_on: date | None,
+        taken_on,
     ) -> GalleryPhoto:
         seasons = self._seasons(season_ids, allow_empty=True)
         filename = getattr(file, "filename", None) if file is not None else None
@@ -375,7 +375,7 @@ class GalleryService:
             "height": height,
             "caption": _clean_text(caption, 500, "Caption"),
             "alt_text": _clean_text(alt_text, 300, "Alt text"),
-            "taken_on": taken_on,
+            "taken_on": parse_taken_on(taken_on),
             "admin_id": admin.id,
         }
         item_id = None
@@ -495,9 +495,6 @@ class GalleryService:
             poster = video_poster(url)
             if poster:
                 thumbnail = poster
-        taken = row.get("TakenOn")
-        if isinstance(taken, datetime):
-            taken = taken.date()
         return GalleryPhoto(
             id=int(row["Id"]),
             source_type=row["SourceType"],
@@ -509,7 +506,7 @@ class GalleryService:
             height=int(row["Height"]),
             caption=row.get("Caption"),
             alt_text=row.get("AltText"),
-            taken_on=taken,
+            taken_on=parse_taken_on(row.get("TakenOn")),
             sort_order=int(row.get("SortOrder") or 0),
             is_cover=bool(row.get("IsCover")),
             is_published=bool(row.get("IsPublished")),

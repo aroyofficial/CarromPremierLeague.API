@@ -89,6 +89,8 @@ def canonicalize(phone_code: str, phone_number: str) -> tuple[str, str, str]:
             national = remainder.lstrip("0")
     if not code_digits or not national:
         raise PhoneNumberError("Enter a valid phone number.")
+    if len(national) > 10:
+        raise PhoneNumberError("Enter at most 10 digits.")
     e164 = f"+{code_digits}{national}"
     if not _E164.fullmatch(e164):
         raise PhoneNumberError("Enter a valid phone number.")
