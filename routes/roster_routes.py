@@ -4,6 +4,7 @@ from core.database import get_db
 from core.response import ApiResponse
 from routes.auth_routes import require_permission
 from services.notify.enqueue import publish_player_change
+from services.webhooks.enqueue import publish_webhook_event
 from repositories.roster_repository import RosterRepository
 from services.roster_service import RosterService
 from controllers.roster_controller import RosterController
@@ -46,6 +47,11 @@ def assign_player(
         request.player_id
     )
     publish_player_change(db, player_id=request.player_id, season_id=request.season_id)
+    publish_webhook_event(
+        db,
+        "roster.updated",
+        {"action": "assigned", "season_id": request.season_id, "team_id": request.team_id, "player_id": request.player_id},
+    )
 
     return ApiResponse(
         success=True,
@@ -64,6 +70,11 @@ def remove_player(
         request.player_id
     )
     publish_player_change(db, player_id=request.player_id, season_id=request.season_id)
+    publish_webhook_event(
+        db,
+        "roster.updated",
+        {"action": "removed", "season_id": request.season_id, "player_id": request.player_id},
+    )
 
     return ApiResponse(
         success=True,

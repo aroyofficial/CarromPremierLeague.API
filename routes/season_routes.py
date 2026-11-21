@@ -7,6 +7,7 @@ from routes.auth_routes import require_permission
 from controllers.season_controller import SeasonController
 from schemas.schedule_schema import SeasonScheduleResponse
 from services.notify.enqueue import publish_rename, publish_schedule_rebuild, read_name, season_scheduled
+from services.webhooks.enqueue import publish_webhook_event
 from schemas.season_schema import (
     SeasonCreateRequest,
     SeasonUpdateRequest,
@@ -27,6 +28,7 @@ def create_season(
 ):
     controller = SeasonController(db)
     result = controller.create(request)
+    publish_webhook_event(db, "season.created", result)
 
     return ApiResponse(
         success=True,
@@ -75,6 +77,7 @@ def update_season(
     result = controller.update(season_id, request)
     if previous and result.name != previous:
         publish_rename(db, season_id=season_id)
+    publish_webhook_event(db, "season.updated", result)
 
     return ApiResponse(
         success=True,
@@ -113,10 +116,12 @@ def get_season_teams(season_id: int, db=Depends(get_db)):
     dependencies=[Depends(require_permission("seasons.teams"))]
 )
 def add_season_team(season_id: int, request: SeasonTeamAddRequest, db=Depends(get_db)):
+    data = SeasonController(db).add_team(season_id, request.team_id)
+    publish_webhook_event(db, "season.updated", {"season_id": season_id, "teams": data})
     return ApiResponse(
         success=True,
         message="Team added to season successfully",
-        data=SeasonController(db).add_team(season_id, request.team_id)
+        data=data
     )
 
 
@@ -126,10 +131,12 @@ def add_season_team(season_id: int, request: SeasonTeamAddRequest, db=Depends(ge
     dependencies=[Depends(require_permission("seasons.teams"))]
 )
 def remove_season_team(season_id: int, team_id: int, db=Depends(get_db)):
+    data = SeasonController(db).remove_team(season_id, team_id)
+    publish_webhook_event(db, "season.updated", {"season_id": season_id, "removed_team_id": team_id})
     return ApiResponse(
         success=True,
         message="Team removed from season successfully",
-        data=SeasonController(db).remove_team(season_id, team_id)
+        data=data
     )
 
 
@@ -142,6 +149,7 @@ def schedule_season_matches(season_id: int, db=Depends(get_db)):
     removed = season_scheduled(db, season_id)
     result = SeasonController(db).schedule_matches(season_id)
     publish_schedule_rebuild(db, season_id, removed)
+    publish_webhook_event(db, "season.schedule_rebuilt", {"season_id": season_id, "schedule": result})
     message = "League matches scheduled" if result.removed == 0 else "League matches rescheduled"
     return ApiResponse(success=True, message=message, data=result)
 

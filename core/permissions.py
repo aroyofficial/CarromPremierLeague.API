@@ -58,6 +58,8 @@ AREAS: tuple[Area, ...] = (
     Area("admins", "administration", "Admin users", "Accounts that can sign in to this console.", "UserFilled", 80),
     Area("permissions", "administration", "Permissions", "Granting and removing permissions.", "Lock", 90),
     Area("assistant", "administration", "Striker assistant", "Who may chat with Striker in this console.", "ChatDotRound", 95),
+    Area("webhooks", "administration", "Webhooks", "Outbound HTTP callbacks when league or match events happen.", "Connection", 96),
+    Area("apps", "administration", "Apps and API keys", "API keys for external apps and integrations.", "Key", 97),
 )
 
 CATALOG: tuple[Permission, ...] = (
@@ -130,6 +132,20 @@ CATALOG: tuple[Permission, ...] = (
         "Open the Striker chat in this console. Striker still follows every other permission you hold.",
         910,
     ),
+    Permission(
+        "webhooks.manage",
+        "webhooks",
+        "Manage webhooks",
+        "Create, edit, test and delete outbound webhooks.",
+        920,
+    ),
+    Permission(
+        "apps.manage",
+        "apps",
+        "Manage apps",
+        "Create, rotate and revoke API keys within the permissions you hold.",
+        930,
+    ),
 )
 
 ROLES: tuple[Role, ...] = (
@@ -183,6 +199,13 @@ ROLES: tuple[Role, ...] = (
         60,
         ("assistant.use",),
     ),
+    Role(
+        "integration_manager",
+        "Integration manager",
+        "Manages outbound webhooks and external app API keys.",
+        70,
+        ("webhooks.manage", "apps.manage"),
+    ),
 )
 
 ALL_CODES: frozenset[str] = frozenset(permission.code for permission in CATALOG)
@@ -190,11 +213,24 @@ NAMES: dict[str, str] = {permission.code: permission.name for permission in CATA
 AREA_NAMES: dict[str, str] = {area.code: area.name for area in AREAS}
 PARENTS: dict[str, str] = {permission.code: permission.parent for permission in CATALOG if permission.parent}
 MANAGE_PERMISSIONS = "permissions.manage"
+MANAGE_WEBHOOKS = "webhooks.manage"
+MANAGE_APPS = "apps.manage"
 USE_ASSISTANT = "assistant.use"
 VIEW_ADMINS = "admins.view"
 CREATE_ADMINS = "admins.create"
 UPDATE_ADMINS = "admins.update"
 DELETE_ADMINS = "admins.delete"
+APP_FORBIDDEN_SCOPES: frozenset[str] = frozenset({
+    MANAGE_PERMISSIONS,
+    VIEW_ADMINS,
+    CREATE_ADMINS,
+    UPDATE_ADMINS,
+    DELETE_ADMINS,
+    MANAGE_APPS,
+    MANAGE_WEBHOOKS,
+    USE_ASSISTANT,
+})
+APP_ALLOWED_SCOPES: frozenset[str] = ALL_CODES - APP_FORBIDDEN_SCOPES
 
 
 def ensure_known(*codes: str) -> None:

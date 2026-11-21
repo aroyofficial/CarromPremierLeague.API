@@ -18,6 +18,7 @@ from core.storage import MediaStorage, get_storage
 from routes.auth_routes import require_permission
 from services.media_service import MediaService
 from services.notify.enqueue import publish_player_change
+from services.webhooks.enqueue import publish_webhook_event
 
 
 router = APIRouter(
@@ -83,6 +84,8 @@ def create(
     controller: PlayerController = Depends(get_controller)
 ):
     result = controller.create(request)
+    db = getattr(getattr(getattr(controller, "service", None), "repository", None), "db", None)
+    publish_webhook_event(db, "player.created", result)
 
     return ApiResponse(
         success=True,
@@ -102,6 +105,7 @@ def update(
     # A name change shows in the calendar events of every match the player appears in.
     if request.first_name is not None or request.last_name is not None:
         publish_player_change(db, player_id=player_id)
+    publish_webhook_event(db, "player.updated", result)
 
     return ApiResponse(
         success=True,

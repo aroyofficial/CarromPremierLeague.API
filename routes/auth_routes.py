@@ -108,11 +108,58 @@ def _pending_password_allowed(request: Request, admin: AdminResponse) -> bool:
     return request.method == "PATCH" and path == f"/admins/{admin.id}"
 
 
+_API_KEY_FORBIDDEN_PREFIXES = (
+    "/auth",
+    "/admins",
+    "/permissions",
+    "/apps",
+    "/webhooks",
+    "/assistant",
+    "/realtime",
+    "/notifications",
+    "/calendar/google",
+    "/calendar/microsoft",
+)
+
+
+def _api_key_allowed_path(path: str) -> bool:
+    normalized = (path or "/").rstrip("/") or "/"
+    for prefix in _API_KEY_FORBIDDEN_PREFIXES:
+        if normalized == prefix or normalized.startswith(f"{prefix}/"):
+            return False
+    return True
+
+
+def _authenticate_api_key(request: Request, raw_key: str) -> AdminResponse:
+    if not _api_key_allowed_path(request.url.path):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API keys cannot access account or integration management endpoints.",
+        )
+    injected = getattr(request.app.state, "app_service", None)
+    if injected is not None:
+        return injected.authenticate_principal(raw_key)
+    from core.database import Database
+    from repositories.app_repository import AppRepository
+    from services.app_service import AppService
+
+    conn = Database.get_connection()
+    try:
+        return AppService(AppRepository(conn)).authenticate_principal(raw_key)
+    finally:
+        conn.close()
+
+
 def get_current_admin(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     service: AuthService = Depends(get_service),
 ) -> AdminResponse:
+    api_key = request.headers.get("X-API-Key")
+    if credentials is None and api_key:
+        admin = _authenticate_api_key(request, api_key)
+        request.state.api_key_principal = True
+        return admin
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

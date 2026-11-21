@@ -27,7 +27,7 @@ PUBLIC_CHANNEL = "public"
 STAFF_CHANNEL = "staff"
 # First path segment of a successful write -> the area clients refetch.
 PUBLIC_AREAS = frozenset({"matches", "seasons", "teams", "players", "countries", "rosters", "settings", "gallery"})
-STAFF_SEGMENTS = frozenset({"admins", "auth"})
+STAFF_SEGMENTS = frozenset({"admins", "auth", "apps", "webhooks"})
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
@@ -108,6 +108,8 @@ def staff_notices(method: str, path: str, actor_id: int | None) -> list[tuple[st
     segments = _segments(path)
     if not segments or segments[0] not in STAFF_SEGMENTS:
         return []
+    if segments[0] in {"apps", "webhooks"}:
+        return [(STAFF_CHANNEL, "integrations")]
     notices = [(STAFF_CHANNEL, "admins")]
     targets = []
     if actor_id is not None:

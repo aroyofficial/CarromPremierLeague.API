@@ -7,6 +7,7 @@ from repositories.settings_repository import SettingsRepository
 from routes.auth_routes import require_permission
 from schemas.settings_schema import CompetitionSettings
 from services.settings_service import SettingsService
+from services.webhooks.enqueue import publish_webhook_event
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
@@ -29,8 +30,11 @@ def update_settings(
     request: CompetitionSettings,
     controller: SettingsController = Depends(get_controller),
 ):
+    data = controller.update(request)
+    db = getattr(getattr(getattr(controller, "service", None), "repository", None), "db", None)
+    publish_webhook_event(db, "settings.updated", data)
     return ApiResponse(
         success=True,
         message="Competition settings saved successfully",
-        data=controller.update(request),
+        data=data,
     )

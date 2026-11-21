@@ -15,6 +15,7 @@ from core.storage import MediaStorage, get_storage
 from routes.auth_routes import require_permission
 from services.media_service import MediaService
 from services.notify.enqueue import publish_rename, read_name
+from services.webhooks.enqueue import publish_webhook_event
 
 
 router = APIRouter(
@@ -67,6 +68,8 @@ def create(
     controller: TeamController = Depends(get_controller)
 ):
     result = controller.create(request)
+    db = getattr(getattr(getattr(controller, "service", None), "repository", None), "db", None)
+    publish_webhook_event(db, "team.created", result)
 
     return ApiResponse(
         success=True,
@@ -86,6 +89,7 @@ def update(
     result = controller.update(team_id, request)
     if previous and result.name != previous:
         publish_rename(db, team_id=team_id)
+    publish_webhook_event(db, "team.updated", result)
 
     return ApiResponse(
         success=True,

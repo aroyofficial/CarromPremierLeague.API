@@ -8,6 +8,12 @@ from controllers.match_controller import MatchController
 from routes.auth_routes import require_permission
 from services.notify.enqueue import load_notice, publish_match_change, publish_side_effects
 from services.notify.flags import load_flags
+from services.webhooks.enqueue import (
+    load_match_snapshot,
+    publish_match_side_effect_webhooks,
+    publish_match_webhooks,
+    publish_webhook_event,
+)
 from schemas.match_schema import (
     MatchCreateRequest,
     MatchUpdateRequest,
@@ -49,6 +55,8 @@ def _publish(db, controller: MatchController, kind: str, before, after, match_id
 def create(request: MatchCreateRequest, db=Depends(get_db), controller: MatchController = Depends(get_controller)):
     data = controller.create(request)
     _publish(db, controller, "created", None, load_notice(db, data.id) if _armed() else None, data.id)
+    publish_match_webhooks(db, "created", None, load_match_snapshot(db, data.id))
+    publish_match_side_effect_webhooks(db, controller.service.repository.notices, {data.id})
     return ApiResponse(
         success=True,
         message="Match created successfully",
@@ -89,8 +97,13 @@ def get_by_id(match_id: int, controller: MatchController = Depends(get_controlle
 @router.patch("/{match_id}", response_model=ApiResponse[MatchResponse], dependencies=[Depends(require_permission("matches.update"))])
 def update(match_id: int, request: MatchUpdateRequest, db=Depends(get_db), controller: MatchController = Depends(get_controller)):
     before = load_notice(db, match_id) if _armed() else None
+    before_wh = before if before is not None else load_match_snapshot(db, match_id)
     data = controller.update(match_id, request)
-    _publish(db, controller, "updated", before, load_notice(db, match_id) if _armed() else None, match_id)
+    after = load_notice(db, match_id) if _armed() else None
+    _publish(db, controller, "updated", before, after, match_id)
+    after_wh = after if after is not None else load_match_snapshot(db, match_id)
+    publish_match_webhooks(db, "updated", before_wh, after_wh)
+    publish_match_side_effect_webhooks(db, controller.service.repository.notices, {match_id})
     return ApiResponse(
         success=True,
         message="Match updated successfully",
@@ -101,8 +114,12 @@ def update(match_id: int, request: MatchUpdateRequest, db=Depends(get_db), contr
 @router.post("/{match_id}/reset", response_model=ApiResponse[MatchResponse], dependencies=[Depends(require_permission("matches.reset"))])
 def reset(match_id: int, db=Depends(get_db), controller: MatchController = Depends(get_controller)):
     before = load_notice(db, match_id) if _armed() else None
+    before_wh = before if before is not None else load_match_snapshot(db, match_id)
     data = controller.reset(match_id)
-    _publish(db, controller, "reset", before, load_notice(db, match_id) if _armed() else None, match_id)
+    after = load_notice(db, match_id) if _armed() else None
+    _publish(db, controller, "reset", before, after, match_id)
+    after_wh = after if after is not None else load_match_snapshot(db, match_id)
+    publish_match_webhooks(db, "reset", before_wh, after_wh)
     return ApiResponse(
         success=True,
         message="Match reset to scheduled",
@@ -121,21 +138,31 @@ def get_stats(match_id: int, controller: MatchController = Depends(get_controlle
 
 @router.put("/{match_id}/stats", response_model=ApiResponse[List[MatchStatResponse]], dependencies=[Depends(require_permission("matches.scorecard"))])
 def upsert_stats(match_id: int, request: MatchStatsUpsertRequest, controller: MatchController = Depends(get_controller)):
+    data = controller.upsert_stats(match_id, request)
+    db = getattr(getattr(getattr(controller, "service", None), "repository", None), "db", None)
+    publish_webhook_event(
+        db,
+        "match.score_updated",
+        {"match_id": match_id, "stats": data},
+    )
     return ApiResponse(
         success=True,
         message="Match stats updated successfully",
-        data=controller.upsert_stats(match_id, request)
+        data=data
     )
 
 
 @router.delete("/{match_id}", response_model=ApiResponse[bool], dependencies=[Depends(require_permission("matches.delete"))])
 def delete(match_id: int, db=Depends(get_db), controller: MatchController = Depends(get_controller)):
     before = load_notice(db, match_id) if _armed() else None
+    before_wh = before if before is not None else load_match_snapshot(db, match_id)
     data = controller.delete(match_id)
     after = None
     if _armed():
         after = load_notice(db, match_id) or ({**before, "void": True} if before else None)
     _publish(db, controller, "deleted", before, after, match_id)
+    after_wh = after if after is not None else (load_match_snapshot(db, match_id) or ({**before_wh, "void": True} if before_wh else None))
+    publish_match_webhooks(db, "deleted", before_wh, after_wh)
     return ApiResponse(
         success=True,
         message="Match deleted successfully",

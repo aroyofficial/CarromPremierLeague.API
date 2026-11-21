@@ -27,9 +27,12 @@ from routes.gallery_routes import router as gallery_router
 from routes.assistant_routes import router as assistant_router
 from routes.realtime_routes import router as realtime_router
 from routes.notify_routes import router as notify_router
+from routes.app_routes import router as app_router
+from routes.webhook_routes import router as webhook_router
 from services.notify.flags import load_flags
 from services.notify.redact import install_feed_token_filter
 from services.notify.worker import run_notify_worker
+from services.webhooks.worker import run_webhook_worker, webhooks_worker_enabled
 
 install_feed_token_filter()
 
@@ -53,7 +56,18 @@ async def lifespan(app: FastAPI):
     flags = load_flags()
     if flags.worker_enabled and flags.delivery_ready():
         notify_task = asyncio.create_task(run_notify_worker(stop_notify))
+    stop_webhooks = asyncio.Event()
+    webhook_task = None
+    if webhooks_worker_enabled():
+        webhook_task = asyncio.create_task(run_webhook_worker(stop_webhooks))
     yield
+    if webhook_task is not None:
+        stop_webhooks.set()
+        webhook_task.cancel()
+        try:
+            await webhook_task
+        except asyncio.CancelledError:
+            pass
     if notify_task is not None:
         stop_notify.set()
         notify_task.cancel()
@@ -88,3 +102,5 @@ app.include_router(gallery_router)
 app.include_router(assistant_router)
 app.include_router(realtime_router)
 app.include_router(notify_router)
+app.include_router(app_router)
+app.include_router(webhook_router)
