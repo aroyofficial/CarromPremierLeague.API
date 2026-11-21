@@ -81,6 +81,8 @@ class RealtimeEventTests(unittest.TestCase):
         self.assertEqual(public_area("PUT", "/matches/4/stats"), "matches")
         self.assertEqual(public_area("DELETE", "/rosters/remove"), "rosters")
         self.assertEqual(public_area("PUT", "/settings"), "settings")
+        self.assertEqual(public_area("PATCH", "/widgets/3"), "widgets")
+        self.assertIsNone(public_area("GET", "/widgets/t/cpl_widget_abc"))
         self.assertIsNone(public_area("GET", "/matches"))
         self.assertIsNone(public_area("POST", "/auth/login"))
         self.assertIsNone(public_area("PATCH", "/admins/3"))
@@ -116,6 +118,7 @@ class RealtimeEventTests(unittest.TestCase):
         )
         self.assertEqual(staff_notices("POST", "/auth/reset-password", actor_id=None), [(STAFF_CHANNEL, "admins")])
         self.assertEqual(staff_notices("POST", "/admins", actor_id=5), [(STAFF_CHANNEL, "admins"), (admin_channel(5), "me")])
+        self.assertEqual(staff_notices("PATCH", "/widgets/3", actor_id=5), [(STAFF_CHANNEL, "integrations")])
 
     def test_reads_and_other_writes_notify_no_staff(self):
         self.assertEqual(staff_notices("GET", "/admins", actor_id=5), [])

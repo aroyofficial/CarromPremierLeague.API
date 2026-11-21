@@ -56,8 +56,10 @@ class MatchRepository:
             outcome=row["Outcome"],
             order=row["Order"],
             toss_outcome=row["TossOutcome"],
+            ready_at=row.get("ReadyAt"),
             started_at=row.get("StartedAt"),
             extra_started_at=row.get("ExtraStartedAt"),
+            completed_at=row.get("CompletedAt"),
         )
 
     @staticmethod
@@ -581,8 +583,30 @@ class MatchRepository:
                 fields.append(f"{field_mapping[key]} = %s")
                 values.append(value)
 
+        cursor = self.db.cursor()
+
+        if update_data.get("is_ready") is True:
+            cursor.execute(
+                """
+                UPDATE tblMatches
+                SET ReadyAt = NULL,
+                    UpdatedAt = SYSUTCDATETIME()
+                WHERE SeasonId = (SELECT SeasonId FROM tblMatches WHERE Id = %s)
+                  AND Id <> %s
+                  AND Status = %s
+                  AND ReadyAt IS NOT NULL
+                  AND Void = 0
+                """,
+                (match_id, match_id, MatchStatus.Scheduled.value),
+            )
+            fields.append("ReadyAt = COALESCE(ReadyAt, SYSUTCDATETIME())")
+        elif "is_ready" in update_data and update_data["is_ready"] is False:
+            fields.append("ReadyAt = NULL")
+
         if update_data.get("status") == MatchStatus.InProgress.value:
             fields.append("StartedAt = COALESCE(StartedAt, SYSUTCDATETIME())")
+        if update_data.get("status") == MatchStatus.Played.value:
+            fields.append("CompletedAt = COALESCE(CompletedAt, SYSUTCDATETIME())")
         if update_data.get("extra") is not None:
             fields.append("ExtraStartedAt = COALESCE(ExtraStartedAt, SYSUTCDATETIME())")
 
@@ -594,7 +618,6 @@ class MatchRepository:
 
         values.append(match_id)
 
-        cursor = self.db.cursor()
         cursor.execute(query, tuple(values))
 
         updated_match = self.get_by_id(match_id)
@@ -630,8 +653,10 @@ class MatchRepository:
                 Duration = NULL,
                 Extra = NULL,
                 GoldenStrike = 0,
+                ReadyAt = NULL,
                 StartedAt = NULL,
                 ExtraStartedAt = NULL,
+                CompletedAt = NULL,
                 UpdatedAt = SYSUTCDATETIME()
             WHERE Id = %s AND Void = 0
             """,

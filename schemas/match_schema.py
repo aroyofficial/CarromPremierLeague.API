@@ -44,6 +44,7 @@ class MatchUpdateRequest(BaseModel):
     net_points: Optional[int] = Field(default=None, ge=0, le=9)
     outcome: Optional[int] = Field(default=None, ge=1, le=3)
     toss_outcome: Optional[int] = Field(default=None, ge=1, le=3)
+    is_ready: Optional[bool] = None
 
 
 class MatchResponse(BaseModel):
@@ -61,11 +62,13 @@ class MatchResponse(BaseModel):
     outcome: Optional[int]
     order: int
     toss_outcome: int
+    ready_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     extra_started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
     # SQL Server stores these with SYSUTCDATETIME() and returns them without an offset.
-    @field_serializer("started_at", "extra_started_at")
+    @field_serializer("ready_at", "started_at", "extra_started_at", "completed_at")
     def _utc(self, value: Optional[datetime]) -> Optional[str]:
         if value is None:
             return None

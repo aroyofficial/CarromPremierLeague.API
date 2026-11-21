@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 
 # Only this many seconds pass between LastUsedAt writes, so a widget polling every 5 seconds writes at most once a minute.
 TOUCH_INTERVAL_SECONDS = 60
@@ -15,6 +16,18 @@ class WidgetRepository:
         return bool(value)
 
     @staticmethod
+    def _parse_flow(raw) -> dict | None:
+        if not raw:
+            return None
+        if isinstance(raw, dict):
+            return raw
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _row_to_dict(row: dict) -> dict:
         return {
             "id": int(row["Id"]),
@@ -28,6 +41,7 @@ class WidgetRepository:
             "expires_at": row.get("ExpiresAt"),
             "last_used_at": row.get("LastUsedAt"),
             "revoked_at": row.get("RevokedAt"),
+            "flow_config": WidgetRepository._parse_flow(row.get("FlowConfigJson")),
             "created_at": row.get("CreatedAt"),
             "updated_at": row.get("UpdatedAt"),
             "created_by": int(row["CreatedBy"]),
@@ -35,7 +49,7 @@ class WidgetRepository:
 
     _COLUMNS = """
         Id, Name, WidgetType, MatchId, SeasonId, TokenPrefix, TokenHash, IsActive,
-        ExpiresAt, LastUsedAt, RevokedAt, CreatedAt, UpdatedAt, CreatedBy
+        ExpiresAt, LastUsedAt, RevokedAt, FlowConfigJson, CreatedAt, UpdatedAt, CreatedBy
     """
 
     def list_all(self) -> list[dict]:
@@ -66,15 +80,17 @@ class WidgetRepository:
         token_hash: str,
         expires_at: datetime | None,
         created_by: int,
+        flow_config: dict | None = None,
     ) -> dict:
+        flow_json = json.dumps(flow_config, separators=(",", ":")) if flow_config is not None else None
         cursor = self.db.cursor()
         cursor.execute(
             """
             INSERT INTO tblWidgetTokens
-                (Name, WidgetType, MatchId, SeasonId, TokenPrefix, TokenHash, IsActive, ExpiresAt, CreatedBy)
-            VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s)
+                (Name, WidgetType, MatchId, SeasonId, TokenPrefix, TokenHash, IsActive, ExpiresAt, FlowConfigJson, CreatedBy)
+            VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s, %s)
             """,
-            (name, widget_type, match_id, season_id, token_prefix, token_hash, expires_at, created_by),
+            (name, widget_type, match_id, season_id, token_prefix, token_hash, expires_at, flow_json, created_by),
         )
         widget_id = int(cursor.lastrowid)
         self.db.commit()
@@ -90,6 +106,14 @@ class WidgetRepository:
         if "expires_at" in changes:
             assignments.append("ExpiresAt = %s")
             values.append(changes["expires_at"])
+        if "flow_config" in changes:
+            flow_json = (
+                json.dumps(changes["flow_config"], separators=(",", ":"))
+                if changes["flow_config"] is not None
+                else None
+            )
+            assignments.append("FlowConfigJson = %s")
+            values.append(flow_json)
         if "is_active" in changes:
             assignments.append("IsActive = %s")
             values.append(1 if changes["is_active"] else 0)

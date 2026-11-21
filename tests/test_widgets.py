@@ -40,7 +40,7 @@ class FakeWidgetRepository:
                 return dict(row)
         return None
 
-    def create(self, *, name, widget_type, match_id, season_id, token_prefix, token_hash, expires_at, created_by) -> dict:
+    def create(self, *, name, widget_type, match_id, season_id, token_prefix, token_hash, expires_at, created_by, flow_config=None) -> dict:
         self.seq += 1
         now = self._now()
         self.rows[self.seq] = {
@@ -55,6 +55,7 @@ class FakeWidgetRepository:
             "expires_at": expires_at,
             "last_used_at": None,
             "revoked_at": None,
+            "flow_config": json.loads(json.dumps(flow_config)) if flow_config is not None else None,
             "created_at": now,
             "updated_at": now,
             "created_by": created_by,
@@ -69,6 +70,8 @@ class FakeWidgetRepository:
             row["name"] = changes["name"]
         if "expires_at" in changes:
             row["expires_at"] = changes["expires_at"]
+        if "flow_config" in changes:
+            row["flow_config"] = json.loads(json.dumps(changes["flow_config"])) if changes["flow_config"] is not None else None
         if "is_active" in changes:
             row["is_active"] = bool(changes["is_active"])
             row["revoked_at"] = None if row["is_active"] else (row["revoked_at"] or self._now())
@@ -149,6 +152,35 @@ class FakeWidgetSource:
 
     def team_roster(self, season_id: int, team_id: int) -> list[dict]:
         return [dict(p) for p in self._rosters.get((season_id, team_id), [])]
+
+    def league_table(self, season_id: int) -> dict:
+        return {
+            "winner_id": None,
+            "season_status": 2,
+            "data_available": True,
+            "standings": [
+                {"team_id": 10, "team_name": "Dum Dum Diamonds", "matches_played": 2, "wins": 2, "draws": 0, "points": 4, "net_points": 7, "head_to_head_wins": 1, "golden_strike_wins": 0},
+                {"team_id": 20, "team_name": "Kolkata Kings", "matches_played": 2, "wins": 0, "draws": 0, "points": 0, "net_points": -7, "head_to_head_wins": 0, "golden_strike_wins": 0},
+            ],
+        }
+
+    def top_stats(self, season_id: int, limit: int = 5) -> dict:
+        return {
+            "matches_scheduled": 4,
+            "matches_played": 2,
+            "is_league_stage_completed": False,
+            "players": [
+                {"player_id": 100, "first_name": "Ana", "last_name": "Lee", "avatar_url": None, "team_id": 10, "team_name": "Dum Dum Diamonds", "coins_pocketed": 9, "opponent_coins_pocketed": 1, "single_fines": 1, "double_fines": 0, "net_coins": 8, "coins_fined": 1, "strikers_pocketed": 0},
+            ],
+        }
+
+    def head_to_head(self, team1_id: int | None, team2_id: int | None) -> dict | None:
+        if not team1_id or not team2_id:
+            return None
+        return {"team1_id": team1_id, "team2_id": team2_id, "matches_played": 3, "team1_wins": 2, "team2_wins": 1, "team1_net_points": 6, "team2_net_points": 3}
+
+    def clock_settings(self) -> dict:
+        return {"regulation_minutes": 15, "extra_minutes": 5, "league_queen": True, "queen_needs_cover": True}
 
 
 def _build_harness():
@@ -369,6 +401,93 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         response = self.client.post("/widgets/999/rotate", headers=self._bearer(self.owner))
         self.assertEqual(response.status_code, 404)
+
+    def test_season_flow_points_and_stats_snapshots_and_director_overrides(self):
+        headers = self._bearer(self.owner)
+        self.source.matches[2] = {
+            "id": 2,
+            "season_id": 5,
+            "order": 2,
+            "scheduled_date": "2026-11-22",
+            "category": 1,
+            "status": 1,
+            "outcome": 3,
+            "net_points": None,
+            "duration": None,
+            "extra": None,
+            "golden_strike": False,
+            "toss_outcome": 3,
+            "ready_at": "2026-11-21T12:15:00Z",
+            "started_at": None,
+            "extra_started_at": None,
+            "completed_at": None,
+            "team1": 20,
+            "team2": 10,
+        }
+        flow_widget = self._create(
+            name="Season 5 Broadcast",
+            widget_type="season_flow",
+            match_id=None,
+            season_id=5,
+            flow_config={
+                "idle_mode": "once_then_clean",
+                "theme_accent": "gold",
+                "match_stages": {"show_ready": True, "show_toss": True, "show_live": True, "show_clock": True, "show_player_strip": True, "result_duration_sec": 25},
+                "rotation": [
+                    {"id": "r1", "kind": "points_table", "duration_sec": 20, "enabled": True},
+                    {"id": "r2", "kind": "stats", "duration_sec": 15, "enabled": True},
+                ],
+                "director": {"mode": "auto"},
+            },
+        )
+        snap = self._snapshot(flow_widget["token"]).json()["data"]
+        self.assertEqual(snap["type"], "season_flow")
+        self.assertEqual(snap["flow"]["idle_mode"], "once_then_clean")
+        self.assertEqual(len(snap["flow"]["rotation"]), 2)
+        self.assertEqual(snap["active_match"]["match"]["id"], 1)
+        self.assertEqual(snap["next_scheduled_match"]["match"]["id"], 2)
+        # Match 2 has no stats rows yet, so rosters still populate 0-coin player lines.
+        self.assertEqual(snap["next_scheduled_match"]["players"]["team1"][0]["name"], "Ben Cole")
+        self.assertEqual(snap["next_scheduled_match"]["players"]["team1"][0]["coins_pocketed"], 0)
+        self.assertEqual(snap["points_table"]["standings"][0]["rank"], 1)
+        self.assertEqual(snap["top_stats"]["players"][0]["name"], "Ana Lee")
+        self.assertIn("server_now", snap)
+        for secret in ("token", "token_hash", "created_by", "cpl_widget_"):
+            self.assertNotIn(secret, json.dumps(snap))
+
+        # Director pin update without resending the whole flow_config.
+        until = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+        patched = self.client.patch(
+            f"/widgets/{flow_widget['id']}",
+            json={"director": {"mode": "pin", "card": "points_table", "until_utc": until}},
+            headers=headers,
+        )
+        self.assertEqual(patched.status_code, 200, patched.text)
+        self.assertEqual(patched.json()["data"]["flow_config"]["director"]["mode"], "pin")
+        self.assertEqual(patched.json()["data"]["flow_config"]["director"]["card"], "points_table")
+        self.assertEqual(len(patched.json()["data"]["flow_config"]["rotation"]), 2)
+
+        # Pin without a card is rejected.
+        bad_pin = self.client.patch(
+            f"/widgets/{flow_widget['id']}",
+            json={"director": {"mode": "pin"}},
+            headers=headers,
+        )
+        self.assertEqual(bad_pin.status_code, 422)
+
+        # Standalone points_table and stats widgets, plus admin preview endpoints.
+        pts_widget = self._create(name="Standings", widget_type="points_table", match_id=None, season_id=5)
+        stats_widget = self._create(name="Leaders", widget_type="stats", match_id=None, season_id=5)
+        self.assertEqual(self._snapshot(pts_widget["token"]).json()["data"]["type"], "points_table")
+        self.assertEqual(self._snapshot(stats_widget["token"]).json()["data"]["type"], "stats")
+
+        preview_w = self.client.get(f"/widgets/{flow_widget['id']}/preview", headers=headers)
+        self.assertEqual(preview_w.status_code, 200)
+        self.assertEqual(preview_w.json()["data"]["type"], "season_flow")
+        preview_s = self.client.get("/widgets/season-preview/5", headers=headers)
+        self.assertEqual(preview_s.status_code, 200)
+        self.assertEqual(preview_s.json()["data"]["season"]["id"], 5)
+
 
 
 if __name__ == "__main__":

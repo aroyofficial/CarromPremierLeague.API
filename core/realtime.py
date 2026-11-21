@@ -26,8 +26,8 @@ PUBLIC_CHANNEL = "public"
 # Admin-only notices. Only ticketed admin streams subscribe, never the public stream.
 STAFF_CHANNEL = "staff"
 # First path segment of a successful write -> the area clients refetch.
-PUBLIC_AREAS = frozenset({"matches", "seasons", "teams", "players", "countries", "rosters", "settings", "gallery"})
-STAFF_SEGMENTS = frozenset({"admins", "auth", "apps", "webhooks"})
+PUBLIC_AREAS = frozenset({"matches", "seasons", "teams", "players", "countries", "rosters", "settings", "gallery", "widgets"})
+STAFF_SEGMENTS = frozenset({"admins", "auth", "apps", "webhooks", "widgets"})
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
@@ -108,7 +108,7 @@ def staff_notices(method: str, path: str, actor_id: int | None) -> list[tuple[st
     segments = _segments(path)
     if not segments or segments[0] not in STAFF_SEGMENTS:
         return []
-    if segments[0] in {"apps", "webhooks"}:
+    if segments[0] in {"apps", "webhooks", "widgets"}:
         return [(STAFF_CHANNEL, "integrations")]
     notices = [(STAFF_CHANNEL, "admins")]
     targets = []
@@ -300,7 +300,7 @@ class PublicChangeMiddleware:
             return
         method, path = scope.get("method", ""), scope.get("path", "")
         area = public_area(method, path)
-        staff = staff_notices(method, path, None) if area is None else []
+        staff = staff_notices(method, path, None)
         if area is None and not staff:
             await self.app(scope, receive, send)
             return

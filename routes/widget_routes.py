@@ -35,6 +35,28 @@ def list_widgets(service: WidgetService = Depends(get_service)):
     return ApiResponse(success=True, message="Widgets fetched successfully.", data=service.list_widgets())
 
 
+@router.get(
+    "/season-preview/{season_id}",
+    response_model=ApiResponse[dict],
+    dependencies=[Depends(require_permission(MANAGE_WIDGETS))],
+    summary="Preview live season broadcast data while building a flow",
+)
+def preview_season_flow(season_id: int, response: Response, service: WidgetService = Depends(get_service)):
+    response.headers["Cache-Control"] = "no-store"
+    return ApiResponse(success=True, message="Season preview fetched successfully.", data=service.preview_season(season_id))
+
+
+@router.get(
+    "/{widget_id}/preview",
+    response_model=ApiResponse[dict],
+    dependencies=[Depends(require_permission(MANAGE_WIDGETS))],
+    summary="Preview a widget's live snapshot in the admin studio or director",
+)
+def preview_widget(widget_id: int, response: Response, service: WidgetService = Depends(get_service)):
+    response.headers["Cache-Control"] = "no-store"
+    return ApiResponse(success=True, message="Widget preview fetched successfully.", data=service.preview_widget(widget_id))
+
+
 @router.post(
     "",
     status_code=status.HTTP_201_CREATED,
@@ -57,7 +79,7 @@ def create_widget(
     "/{widget_id}",
     response_model=ApiResponse[WidgetResponse],
     dependencies=[Depends(require_permission(MANAGE_WIDGETS))],
-    summary="Rename a widget, turn its link on or off, or change its expiry",
+    summary="Rename a widget, update its season flow or director state, turn its link on or off, or change its expiry",
 )
 def update_widget(widget_id: int, body: WidgetUpdateRequest, service: WidgetService = Depends(get_service)):
     return ApiResponse(success=True, message="Widget updated successfully.", data=service.update(widget_id, body))

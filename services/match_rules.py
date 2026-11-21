@@ -50,6 +50,21 @@ def validate_lifecycle_update(
     current_status = match.status
     category = match.category
 
+    if update_data.get("is_ready") is not None:
+        if current_status != MatchStatus.Scheduled.value or requested_status != MatchStatus.Scheduled.value:
+            raise HTTPException(
+                status_code=400,
+                detail="Only a scheduled match can be marked or cleared as ready.",
+            )
+        if update_data["is_ready"]:
+            effective_team1 = update_data.get("team1", match.team1)
+            effective_team2 = update_data.get("team2", match.team2)
+            if not effective_team1 or not effective_team2:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Both teams must be assigned before marking a match ready.",
+                )
+
     if current_status == MatchStatus.Played.value:
         if requested_status != MatchStatus.Played.value:
             raise HTTPException(status_code=400, detail="A finished match cannot move back to an earlier status.")
