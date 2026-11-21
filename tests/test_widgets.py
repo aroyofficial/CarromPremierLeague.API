@@ -467,6 +467,30 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(patched.json()["data"]["flow_config"]["director"]["card"], "points_table")
         self.assertEqual(len(patched.json()["data"]["flow_config"]["rotation"]), 2)
 
+        # A flow without a transition style reveals its scenes; the page flip is saved when chosen.
+        self.assertEqual(snap["flow"]["transition_style"], "reveal")
+        flipped = self.client.patch(
+            f"/widgets/{flow_widget['id']}",
+            json={"flow_config": {"transition_style": "flip", "rotation": [{"id": "r1", "kind": "stats", "duration_sec": 15, "enabled": True}]}},
+            headers=headers,
+        )
+        self.assertEqual(flipped.status_code, 200, flipped.text)
+        self.assertEqual(flipped.json()["data"]["flow_config"]["transition_style"], "flip")
+        self.assertEqual(self._snapshot(flow_widget["token"]).json()["data"]["flow"]["transition_style"], "flip")
+        unknown_style = self.client.patch(
+            f"/widgets/{flow_widget['id']}",
+            json={"flow_config": {"transition_style": "spin"}},
+            headers=headers,
+        )
+        self.assertEqual(unknown_style.status_code, 422)
+
+        # A new season flow keeps the standings card up for 30 seconds.
+        default_flow = self._create(name="Default flow", widget_type="season_flow", match_id=None, season_id=5)
+        default_rotation = default_flow["flow_config"]["rotation"]
+        self.assertEqual(default_rotation[0]["kind"], "points_table")
+        self.assertEqual(default_rotation[0]["duration_sec"], 30)
+        self.assertEqual(default_flow["flow_config"]["transition_style"], "reveal")
+
         # Pin without a card is rejected.
         bad_pin = self.client.patch(
             f"/widgets/{flow_widget['id']}",

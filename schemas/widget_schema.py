@@ -20,6 +20,10 @@ DirectorCard = Literal[
 ]
 IdleMode = Literal["loop", "once_then_clean"]
 ThemeAccent = Literal["gold", "royal", "crimson"]
+TransitionStyle = Literal["reveal", "flip"]
+
+# The standings card stays up this long so every row can be read.
+POINTS_TABLE_SECONDS = 30
 
 SEASON_SCOPED_TYPES = frozenset({"season_flow", "fixtures", "points_table", "stats"})
 
@@ -74,7 +78,7 @@ class FlowDirectorState(BaseModel):
 
 def default_flow_rotation() -> list[FlowRotationStep]:
     return [
-        FlowRotationStep(id="step-points", kind="points_table", duration_sec=20, enabled=True),
+        FlowRotationStep(id="step-points", kind="points_table", duration_sec=POINTS_TABLE_SECONDS, enabled=True),
         FlowRotationStep(id="step-stats", kind="stats", duration_sec=15, enabled=True),
         FlowRotationStep(id="step-fixtures", kind="fixtures", duration_sec=15, enabled=True),
     ]
@@ -83,6 +87,7 @@ def default_flow_rotation() -> list[FlowRotationStep]:
 class WidgetFlowConfig(BaseModel):
     idle_mode: IdleMode = "loop"
     theme_accent: ThemeAccent = "gold"
+    transition_style: TransitionStyle = "reveal"
     match_stages: FlowMatchStages = Field(default_factory=FlowMatchStages)
     rotation: list[FlowRotationStep] = Field(default_factory=default_flow_rotation, max_length=20)
     director: FlowDirectorState = Field(default_factory=FlowDirectorState)
