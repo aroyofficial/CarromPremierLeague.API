@@ -29,6 +29,7 @@ from routes.realtime_routes import router as realtime_router
 from routes.notify_routes import router as notify_router
 from routes.app_routes import router as app_router
 from routes.webhook_routes import router as webhook_router
+from routes.widget_routes import router as widget_router
 from services.notify.flags import load_flags
 from services.notify.redact import install_feed_token_filter
 from services.notify.worker import run_notify_worker
@@ -104,3 +105,4 @@ app.include_router(realtime_router)
 app.include_router(notify_router)
 app.include_router(app_router)
 app.include_router(webhook_router)
+app.include_router(widget_router)

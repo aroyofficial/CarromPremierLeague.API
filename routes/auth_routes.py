@@ -114,6 +114,7 @@ _API_KEY_FORBIDDEN_PREFIXES = (
     "/permissions",
     "/apps",
     "/webhooks",
+    "/widgets",
     "/assistant",
     "/realtime",
     "/notifications",

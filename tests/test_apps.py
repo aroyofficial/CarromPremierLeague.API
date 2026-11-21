@@ -11,6 +11,7 @@ from core.permissions import (
     APP_FORBIDDEN_SCOPES,
     MANAGE_APPS,
     MANAGE_WEBHOOKS,
+    MANAGE_WIDGETS,
     ROLES,
 )
 from core.realtime import STAFF_CHANNEL, staff_notices
@@ -185,9 +186,9 @@ class AppPermissionsAndApiKeyTests(unittest.TestCase):
         self.auth_service.repository.records[created.id]["MustChangePassword"] = False
         return created
 
-    def test_integration_manager_role_grants_webhooks_and_apps_only(self):
+    def test_integration_manager_role_grants_webhooks_apps_and_widgets_only(self):
         role = next(r for r in ROLES if r.code == "integration_manager")
-        self.assertEqual(set(role.permissions), {MANAGE_WEBHOOKS, MANAGE_APPS})
+        self.assertEqual(set(role.permissions), {MANAGE_WEBHOOKS, MANAGE_APPS, MANAGE_WIDGETS})
 
     def test_apps_endpoints_require_apps_manage_permission(self):
         settings_only = self._make_admin("settings.only", ["settings.update", MANAGE_WEBHOOKS])

@@ -55,6 +55,7 @@ AREAS: tuple[Area, ...] = (
     Area("matches", "matchday", "Matches", "Fixtures, tosses, live play and scorecards.", "Trophy", 60),
     Area("gallery", "media", "Gallery", "Season photos.", "Picture", 55),
     Area("settings", "matchday", "Settings", "Match clock and Queen rules.", "Setting", 70),
+    Area("widgets", "matchday", "Live widgets", "Private scorecard, toss and fixture widgets for streaming apps.", "VideoCamera", 65),
     Area("admins", "administration", "Admin users", "Accounts that can sign in to this console.", "UserFilled", 80),
     Area("permissions", "administration", "Permissions", "Granting and removing permissions.", "Lock", 90),
     Area("assistant", "administration", "Striker assistant", "Who may chat with Striker in this console.", "ChatDotRound", 95),
@@ -89,6 +90,13 @@ CATALOG: tuple[Permission, ...] = (
     Permission("matches.reset", "matches", "Reset matches", "Return a started or played match to scheduled.", 540, "matches.update"),
     Permission("matches.delete", "matches", "Delete matches", "Remove a fixture.", 550, "matches.update"),
     Permission("settings.update", "settings", "Change competition settings", "Set the match clock and the Queen rules.", 610),
+    Permission(
+        "widgets.manage",
+        "widgets",
+        "Manage live widgets",
+        "Create, rotate and revoke the private widget links that a streaming app shows on a live stream.",
+        940,
+    ),
     Permission("gallery.create", "gallery", "Add gallery photos", "Upload a photo or save a public image link as a draft.", 650),
     Permission("gallery.update", "gallery", "Edit gallery photos", "Change captions, seasons, order and covers.", 660),
     Permission(
@@ -202,9 +210,9 @@ ROLES: tuple[Role, ...] = (
     Role(
         "integration_manager",
         "Integration manager",
-        "Manages outbound webhooks and external app API keys.",
+        "Manages outbound webhooks, external app API keys and live widgets.",
         70,
-        ("webhooks.manage", "apps.manage"),
+        ("webhooks.manage", "apps.manage", "widgets.manage"),
     ),
 )
 
@@ -215,6 +223,7 @@ PARENTS: dict[str, str] = {permission.code: permission.parent for permission in 
 MANAGE_PERMISSIONS = "permissions.manage"
 MANAGE_WEBHOOKS = "webhooks.manage"
 MANAGE_APPS = "apps.manage"
+MANAGE_WIDGETS = "widgets.manage"
 USE_ASSISTANT = "assistant.use"
 VIEW_ADMINS = "admins.view"
 CREATE_ADMINS = "admins.create"
@@ -228,6 +237,7 @@ APP_FORBIDDEN_SCOPES: frozenset[str] = frozenset({
     DELETE_ADMINS,
     MANAGE_APPS,
     MANAGE_WEBHOOKS,
+    MANAGE_WIDGETS,
     USE_ASSISTANT,
 })
 APP_ALLOWED_SCOPES: frozenset[str] = ALL_CODES - APP_FORBIDDEN_SCOPES
