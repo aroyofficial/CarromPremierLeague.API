@@ -1,3 +1,4 @@
+import base64
 from datetime import datetime, timezone
 import json
 import socket
@@ -78,6 +79,10 @@ class FakeWebhookRepository:
         events: list[str],
         is_active: bool,
         created_by: int,
+        auth_type: str = "none",
+        auth_header_name: str | None = None,
+        auth_ciphertext: str | None = None,
+        auth_hint: str | None = None,
     ) -> dict:
         self._hook_seq += 1
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -98,6 +103,10 @@ class FakeWebhookRepository:
             "created_at": now,
             "updated_at": now,
             "created_by": int(created_by),
+            "auth_type": auth_type,
+            "auth_header_name": auth_header_name,
+            "auth_ciphertext": auth_ciphertext,
+            "auth_hint": auth_hint,
         }
         self.hooks[self._hook_seq] = record
         return self._copy_hook(record)
@@ -106,7 +115,16 @@ class FakeWebhookRepository:
         row = self.hooks.get(int(webhook_id))
         if not row or row["void"]:
             return None
-        for field in ("name", "url", "description", "is_active"):
+        for field in (
+            "name",
+            "url",
+            "description",
+            "is_active",
+            "auth_type",
+            "auth_header_name",
+            "auth_ciphertext",
+            "auth_hint",
+        ):
             if field in changes:
                 row[field] = changes[field]
         if "events" in changes and changes["events"] is not None:
@@ -398,6 +416,163 @@ class WebhookRoutesAndDeliveryTests(unittest.TestCase):
         rotated = self.client.post(f"/webhooks/{created['id']}/rotate-secret", headers=headers).json()["data"]
         self.assertNotEqual(rotated["signing_secret"], raw_secret)
         self.assertEqual(unseal_signing_secret(self.repo.hooks[created["id"]]["secret_ciphertext"]), rotated["signing_secret"])
+
+    def _create_hook(self, headers: dict, **extra):
+        body = {"name": "Auth Hook", "url": "https://hooks.example.com/auth", "events": ["team.created"], **extra}
+        return self.client.post("/webhooks", json=body, headers=headers)
+
+    def _ping(self, hook_id: int, headers: dict):
+        public_ip = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443))]
+        with patch("services.webhooks.security.socket.getaddrinfo", return_value=public_ip):
+            return self.client.post(f"/webhooks/{hook_id}/test", headers=headers)
+
+    def test_each_auth_type_is_sent_on_deliveries_and_never_returned(self):
+        headers = self._bearer(self.owner)
+        cases = [
+            ({"auth_type": "bearer", "auth_token": "tok_live_abcdef123456"}, "Authorization", "Bearer tok_live_abcdef123456"),
+            (
+                {"auth_type": "basic", "auth_username": "bot", "auth_password": "p@ss word"},
+                "Authorization",
+                "Basic " + base64.b64encode(b"bot:p@ss word").decode(),
+            ),
+            (
+                {"auth_type": "header", "auth_header_name": "X-Api-Key", "auth_header_value": "key_987654321"},
+                "X-Api-Key",
+                "key_987654321",
+            ),
+        ]
+        for auth, header, expected in cases:
+            with self.subTest(auth=auth["auth_type"]):
+                self.sent_requests.clear()
+                res = self._create_hook(headers, **auth)
+                self.assertEqual(res.status_code, 201, res.text)
+                data = res.json()["data"]
+                self.assertEqual(data["auth_type"], auth["auth_type"])
+                self.assertTrue(data["auth_hint"])
+                raw = json.dumps(res.json())
+                for key in ("auth_token", "auth_password", "auth_header_value"):
+                    if key in auth:
+                        self.assertNotIn(auth[key], raw)
+                stored = self.repo.hooks[data["id"]]
+                self.assertNotIn(expected, stored["auth_ciphertext"])
+                listed = self.client.get("/webhooks", headers=headers).json()["data"]["webhooks"]
+                self.assertNotIn("auth_ciphertext", listed[0])
+                self.assertNotIn("auth_token", listed[0])
+
+                self.assertTrue(self._ping(data["id"], headers).json()["data"]["ok"])
+                sent_headers = self.sent_requests[0][2]
+                self.assertEqual(sent_headers[header], expected)
+                self.assertIn("X-CPL-Signature-256", sent_headers)
+
+    def test_no_auth_sends_no_authorization_header(self):
+        headers = self._bearer(self.owner)
+        data = self._create_hook(headers).json()["data"]
+        self.assertEqual(data["auth_type"], "none")
+        self.assertIsNone(data["auth_hint"])
+        self._ping(data["id"], headers)
+        self.assertNotIn("Authorization", self.sent_requests[0][2])
+
+    def test_update_keeps_replaces_and_clears_the_credential(self):
+        headers = self._bearer(self.owner)
+        data = self._create_hook(headers, auth_type="bearer", auth_token="first_token_value").json()["data"]
+        hook_id = data["id"]
+        sealed = self.repo.hooks[hook_id]["auth_ciphertext"]
+
+        renamed = self.client.patch(f"/webhooks/{hook_id}", json={"name": "Renamed"}, headers=headers)
+        self.assertEqual(renamed.status_code, 200)
+        self.assertEqual(renamed.json()["data"]["auth_type"], "bearer")
+        self.assertEqual(self.repo.hooks[hook_id]["auth_ciphertext"], sealed)
+
+        replaced = self.client.patch(
+            f"/webhooks/{hook_id}", json={"auth_type": "bearer", "auth_token": "second_token_value"}, headers=headers
+        )
+        self.assertEqual(replaced.status_code, 200)
+        self.assertNotEqual(self.repo.hooks[hook_id]["auth_ciphertext"], sealed)
+        self._ping(hook_id, headers)
+        self.assertEqual(self.sent_requests[-1][2]["Authorization"], "Bearer second_token_value")
+
+        switched = self.client.patch(
+            f"/webhooks/{hook_id}",
+            json={"auth_type": "header", "auth_header_name": "X-Token", "auth_header_value": "abcdef123456"},
+            headers=headers,
+        ).json()["data"]
+        self.assertEqual(switched["auth_header_name"], "X-Token")
+        self._ping(hook_id, headers)
+        self.assertNotIn("Authorization", self.sent_requests[-1][2])
+        self.assertEqual(self.sent_requests[-1][2]["X-Token"], "abcdef123456")
+
+        cleared = self.client.patch(f"/webhooks/{hook_id}", json={"auth_type": "none"}, headers=headers).json()["data"]
+        self.assertEqual(cleared["auth_type"], "none")
+        self.assertIsNone(cleared["auth_hint"])
+        self.assertIsNone(self.repo.hooks[hook_id]["auth_ciphertext"])
+        self._ping(hook_id, headers)
+        self.assertNotIn("X-Token", self.sent_requests[-1][2])
+
+    def test_invalid_credentials_are_rejected(self):
+        headers = self._bearer(self.owner)
+        bad = [
+            {"auth_type": "bearer"},
+            {"auth_type": "bearer", "auth_token": "line\nbreak"},
+            {"auth_type": "basic", "auth_username": "bot"},
+            {"auth_type": "basic", "auth_username": "a:b", "auth_password": "x"},
+            {"auth_type": "header", "auth_header_value": "v"},
+            {"auth_type": "header", "auth_header_name": "Bad Name", "auth_header_value": "v"},
+            {"auth_type": "header", "auth_header_name": "Content-Type", "auth_header_value": "v"},
+            {"auth_type": "header", "auth_header_name": "Host", "auth_header_value": "v"},
+            {"auth_type": "header", "auth_header_name": "X-CPL-Signature-256", "auth_header_value": "v"},
+            {"auth_type": "header", "auth_header_name": "X-Key", "auth_header_value": "v\r\nX-Evil: 1"},
+            {"auth_type": "digest", "auth_token": "x"},
+        ]
+        for auth in bad:
+            with self.subTest(auth=auth):
+                self.assertIn(self._create_hook(headers, **auth).status_code, (400, 422))
+        self.assertEqual(self.repo.hooks, {})
+
+    def test_unreadable_stored_credential_fails_the_delivery_without_sending(self):
+        headers = self._bearer(self.owner)
+        data = self._create_hook(headers, auth_type="bearer", auth_token="token_value_1234").json()["data"]
+        self.repo.hooks[data["id"]]["auth_ciphertext"] = "not-a-sealed-value"
+        res = self._ping(data["id"], headers).json()["data"]
+        self.assertFalse(res["ok"])
+        self.assertIn("credential", res["error"])
+        self.assertEqual(self.sent_requests, [])
+
+    def test_worker_sends_the_stored_credential(self):
+        headers = self._bearer(self.owner)
+        data = self._create_hook(headers, auth_type="bearer", auth_token="worker_token_9999").json()["data"]
+        hook = self.repo.hooks[data["id"]]
+        delivery = self.repo.enqueue_delivery(
+            webhook_id=hook["id"],
+            event_id="evt_auth",
+            event_type="team.created",
+            idempotency_key="team:auth",
+            payload='{"event":"team.created"}',
+            status="leased",
+            attempts=1,
+        )
+        public_ip = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443))]
+        with patch("services.webhooks.security.socket.getaddrinfo", return_value=public_ip):
+            deliver_item(
+                self.repo,
+                {
+                    "Id": delivery,
+                    "WebhookId": hook["id"],
+                    "EventId": "evt_auth",
+                    "EventType": "team.created",
+                    "Payload": '{"event":"team.created"}',
+                    "Attempts": 1,
+                    "Url": hook["url"],
+                    "SecretCiphertext": hook["secret_ciphertext"],
+                    "AuthType": hook["auth_type"],
+                    "AuthHeaderName": hook["auth_header_name"],
+                    "AuthCiphertext": hook["auth_ciphertext"],
+                    "IsActive": True,
+                    "Void": False,
+                },
+                post=lambda url, content, hdrs: (self.sent_requests.append((url, content, hdrs)), _FakeHttpResponse(200))[1],
+            )
+        self.assertEqual(self.sent_requests[-1][2]["Authorization"], "Bearer worker_token_9999")
+        self.assertEqual(self.repo.deliveries[delivery]["status"], "sent")
 
     def test_worker_retry_terminal_4xx_and_inactive_handling(self):
         headers = self._bearer(self.owner)

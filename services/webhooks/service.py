@@ -22,6 +22,7 @@ from services.webhooks.events import (
     build_envelope,
     ordered_webhook_events,
 )
+from services.webhooks.auth import NO_AUTH, WebhookAuth, WebhookAuthError, build_auth
 from services.webhooks.security import (
     WebhookTargetError,
     generate_signing_secret,
@@ -65,6 +66,20 @@ class WebhookService:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @staticmethod
+    def _build_auth(request) -> WebhookAuth:
+        try:
+            return build_auth(
+                request.auth_type,
+                token=request.auth_token,
+                username=request.auth_username,
+                password=request.auth_password,
+                header_name=request.auth_header_name,
+                header_value=request.auth_header_value,
+            )
+        except WebhookAuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @staticmethod
     def _to_response(record: dict) -> WebhookResponse:
         return WebhookResponse(
             id=int(record["id"]),
@@ -81,6 +96,9 @@ class WebhookService:
             created_at=record.get("created_at"),
             updated_at=record.get("updated_at"),
             created_by=int(record["created_by"]),
+            auth_type=record.get("auth_type") or "none",
+            auth_header_name=record.get("auth_header_name"),
+            auth_hint=record.get("auth_hint"),
         )
 
     def list_webhooks(self) -> WebhookListResponse:
@@ -93,6 +111,7 @@ class WebhookService:
     def create_webhook(self, request: WebhookCreateRequest, actor: AdminResponse) -> WebhookCreatedResponse:
         url = self._validate_url(request.url)
         events = self._validate_events(request.events)
+        auth = self._build_auth(request)
         raw_secret, sealed, hint = generate_signing_secret()
         created = self.repository.create(
             name=request.name,
@@ -103,6 +122,10 @@ class WebhookService:
             events=events,
             is_active=request.is_active,
             created_by=actor.id,
+            auth_type=auth.auth_type,
+            auth_header_name=auth.header_name,
+            auth_ciphertext=auth.ciphertext,
+            auth_hint=auth.hint,
         )
         base = self._to_response(created)
         return WebhookCreatedResponse(**base.model_dump(), signing_secret=raw_secret)
@@ -112,6 +135,24 @@ class WebhookService:
         if not existing:
             raise HTTPException(status_code=404, detail="Webhook not found.")
         changes = request.model_dump(exclude_unset=True)
+        # A credential is replaced as a whole. Leaving auth_type out keeps the stored one; "none" removes it.
+        for field in (
+            "auth_type",
+            "auth_token",
+            "auth_username",
+            "auth_password",
+            "auth_header_name",
+            "auth_header_value",
+        ):
+            changes.pop(field, None)
+        if request.auth_type is not None:
+            auth = self._build_auth(request) if request.auth_type != "none" else NO_AUTH
+            changes.update(
+                auth_type=auth.auth_type,
+                auth_header_name=auth.header_name,
+                auth_ciphertext=auth.ciphertext,
+                auth_hint=auth.hint,
+            )
         if "url" in changes:
             if changes["url"] is None:
                 changes.pop("url")
@@ -179,6 +220,9 @@ class WebhookService:
             event_type=TEST_EVENT,
             payload_json=payload_json,
             post=self._post,
+            auth_type=existing.get("auth_type"),
+            auth_header_name=existing.get("auth_header_name"),
+            auth_ciphertext=existing.get("auth_ciphertext"),
         )
         if outcome["ok"]:
             self.repository.mark_sent(

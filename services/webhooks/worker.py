@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from core.database import Database
 from repositories.webhook_repository import WebhookRepository
+from services.webhooks.auth import WebhookAuthError, auth_headers
 from services.webhooks.security import (
     WebhookTargetError,
     sign_webhook_payload,
@@ -41,6 +42,9 @@ def send_signed_webhook(
     payload_json: str,
     post=None,
     timestamp: int | None = None,
+    auth_type: str | None = None,
+    auth_header_name: str | None = None,
+    auth_ciphertext: str | None = None,
 ) -> dict:
     started = time.perf_counter()
     try:
@@ -67,6 +71,18 @@ def send_signed_webhook(
             "terminal": True,
         }
 
+    try:
+        extra_headers = auth_headers(auth_type, auth_header_name, auth_ciphertext)
+    except WebhookAuthError as exc:
+        elapsed = max(0, int((time.perf_counter() - started) * 1000))
+        return {
+            "ok": False,
+            "status_code": None,
+            "duration_ms": elapsed,
+            "error": str(exc),
+            "terminal": True,
+        }
+
     ts = int(timestamp if timestamp is not None else datetime.now(timezone.utc).timestamp())
     signature = sign_webhook_payload(secret, ts, payload_json)
     headers = {
@@ -77,6 +93,7 @@ def send_signed_webhook(
         "X-CPL-Timestamp": str(ts),
         "X-CPL-Signature-256": signature,
     }
+    headers.update(extra_headers)
 
     sender = post or _default_post
     try:
@@ -134,6 +151,9 @@ def deliver_item(repository: WebhookRepository, item: dict, post=None) -> None:
         event_type=item["EventType"],
         payload_json=item["Payload"],
         post=post,
+        auth_type=item.get("AuthType"),
+        auth_header_name=item.get("AuthHeaderName"),
+        auth_ciphertext=item.get("AuthCiphertext"),
     )
     if outcome["ok"]:
         repository.mark_sent(

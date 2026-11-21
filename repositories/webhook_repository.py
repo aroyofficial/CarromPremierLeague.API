@@ -54,6 +54,10 @@ class WebhookRepository:
             "created_at": row.get("CreatedAt"),
             "updated_at": row.get("UpdatedAt"),
             "created_by": int(row["CreatedBy"]),
+            "auth_type": row.get("AuthType") or "none",
+            "auth_header_name": row.get("AuthHeaderName"),
+            "auth_ciphertext": row.get("AuthCiphertext"),
+            "auth_hint": row.get("AuthHint"),
         }
 
     @staticmethod
@@ -80,7 +84,7 @@ class WebhookRepository:
             """
             SELECT Id, Name, Url, Description, SecretCiphertext, SecretHint, Events,
                    IsActive, Void, FailureCount, LastDeliveredAt, LastStatusCode, LastError,
-                   CreatedAt, UpdatedAt, CreatedBy
+                   CreatedAt, UpdatedAt, CreatedBy, AuthType, AuthHeaderName, AuthCiphertext, AuthHint
             FROM tblWebhooks
             WHERE Void = 0
             ORDER BY Id DESC
@@ -94,7 +98,7 @@ class WebhookRepository:
             """
             SELECT Id, Name, Url, Description, SecretCiphertext, SecretHint, Events,
                    IsActive, Void, FailureCount, LastDeliveredAt, LastStatusCode, LastError,
-                   CreatedAt, UpdatedAt, CreatedBy
+                   CreatedAt, UpdatedAt, CreatedBy, AuthType, AuthHeaderName, AuthCiphertext, AuthHint
             FROM tblWebhooks
             WHERE Void = 0 AND IsActive = 1
             ORDER BY Id ASC
@@ -109,7 +113,7 @@ class WebhookRepository:
             """
             SELECT Id, Name, Url, Description, SecretCiphertext, SecretHint, Events,
                    IsActive, Void, FailureCount, LastDeliveredAt, LastStatusCode, LastError,
-                   CreatedAt, UpdatedAt, CreatedBy
+                   CreatedAt, UpdatedAt, CreatedBy, AuthType, AuthHeaderName, AuthCiphertext, AuthHint
             FROM tblWebhooks
             WHERE Id = %s AND Void = 0
             """,
@@ -129,15 +133,33 @@ class WebhookRepository:
         events: list[str],
         is_active: bool,
         created_by: int,
+        auth_type: str = "none",
+        auth_header_name: str | None = None,
+        auth_ciphertext: str | None = None,
+        auth_hint: str | None = None,
     ) -> dict:
         cursor = self.db.cursor()
         events_json = json.dumps(ordered_webhook_events(events), separators=(",", ":"))
         cursor.execute(
             """
-            INSERT INTO tblWebhooks (Name, Url, Description, SecretCiphertext, SecretHint, Events, IsActive, CreatedBy)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO tblWebhooks (Name, Url, Description, SecretCiphertext, SecretHint, Events, IsActive, CreatedBy,
+                                     AuthType, AuthHeaderName, AuthCiphertext, AuthHint)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (name, url, description, secret_ciphertext, secret_hint, events_json, 1 if is_active else 0, created_by),
+            (
+                name,
+                url,
+                description,
+                secret_ciphertext,
+                secret_hint,
+                events_json,
+                1 if is_active else 0,
+                created_by,
+                auth_type,
+                auth_header_name,
+                auth_ciphertext,
+                auth_hint,
+            ),
         )
         webhook_id = int(cursor.lastrowid)
         self.db.commit()
@@ -162,6 +184,15 @@ class WebhookRepository:
         if "is_active" in changes:
             assignments.append("IsActive = %s")
             values.append(1 if changes["is_active"] else 0)
+        if "auth_type" in changes:
+            assignments.append("AuthType = %s")
+            values.append(changes["auth_type"])
+            assignments.append("AuthHeaderName = %s")
+            values.append(changes.get("auth_header_name"))
+            assignments.append("AuthCiphertext = %s")
+            values.append(changes.get("auth_ciphertext"))
+            assignments.append("AuthHint = %s")
+            values.append(changes.get("auth_hint"))
         if not assignments:
             return self.get_by_id(webhook_id)
         assignments.append("UpdatedAt = SYSUTCDATETIME()")
@@ -301,7 +332,8 @@ class WebhookRepository:
             f"""
             SELECT d.Id, d.WebhookId, d.EventId, d.EventType, d.IdempotencyKey, d.Payload,
                    d.Status, d.Attempts, d.CreatedAt,
-                   w.Url, w.SecretCiphertext, w.IsActive, w.Void
+                   w.Url, w.SecretCiphertext, w.IsActive, w.Void,
+                   w.AuthType, w.AuthHeaderName, w.AuthCiphertext
             FROM tblWebhookDeliveries d
             JOIN tblWebhooks w ON w.Id = d.WebhookId
             WHERE d.Id IN ({placeholders})

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -17,7 +17,12 @@ class WebhookCreateRequest(BaseModel):
     description: Optional[str] = Field(default=None, max_length=400)
     events: list[str] = Field(..., min_length=1)
     is_active: bool = True
-
+    auth_type: Optional[Literal["none", "bearer", "basic", "header"]] = None
+    auth_token: Optional[str] = Field(default=None, max_length=500)
+    auth_username: Optional[str] = Field(default=None, max_length=200)
+    auth_password: Optional[str] = Field(default=None, max_length=500)
+    auth_header_name: Optional[str] = Field(default=None, max_length=100)
+    auth_header_value: Optional[str] = Field(default=None, max_length=500)
     @field_validator("name")
     @classmethod
     def _strip_name(cls, value: str) -> str:
@@ -49,7 +54,12 @@ class WebhookUpdateRequest(BaseModel):
     description: Optional[str] = Field(default=None, max_length=400)
     events: Optional[list[str]] = None
     is_active: Optional[bool] = None
-
+    auth_type: Optional[Literal["none", "bearer", "basic", "header"]] = None
+    auth_token: Optional[str] = Field(default=None, max_length=500)
+    auth_username: Optional[str] = Field(default=None, max_length=200)
+    auth_password: Optional[str] = Field(default=None, max_length=500)
+    auth_header_name: Optional[str] = Field(default=None, max_length=100)
+    auth_header_value: Optional[str] = Field(default=None, max_length=500)
     @field_validator("name")
     @classmethod
     def _strip_optional_name(cls, value: Optional[str]) -> Optional[str]:
@@ -85,6 +95,9 @@ class WebhookResponse(BaseModel):
     url: str
     description: Optional[str] = None
     secret_hint: str
+    auth_type: str = "none"
+    auth_header_name: Optional[str] = None
+    auth_hint: Optional[str] = None
     events: list[str]
     is_active: bool = True
     failure_count: int = 0
