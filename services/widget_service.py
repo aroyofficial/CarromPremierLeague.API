@@ -182,6 +182,9 @@ class DbWidgetSnapshotSource:
             "players": players,
         }
 
+    def knockout(self, season_id: int) -> dict:
+        return self.matches.knockout_view(season_id)
+
     def head_to_head(self, team1_id: int | None, team2_id: int | None) -> dict | None:
         if not team1_id or not team2_id or team1_id == team2_id:
             return None
@@ -323,6 +326,45 @@ class WidgetSnapshots:
             "matches_played": raw.get("matches_played", 0),
             "is_league_stage_completed": bool(raw.get("is_league_stage_completed", False)),
             "players": players,
+        }
+
+    def _enriched_knockout(self, season_id: int, teams: dict[int, dict]) -> dict:
+        """The bracket with each side as a team, or as the place it comes from while the team is not known."""
+        getter = getattr(self.source, "knockout", None)
+        raw = getter(season_id) if callable(getter) else {"format": None, "slots": []}
+
+        slots = []
+        champion = None
+        for slot in raw.get("slots") or []:
+            winner_id = slot.get("winner_id")
+            sides = []
+            for team_id, source in zip((slot.get("team1_id"), slot.get("team2_id")), slot.get("sources") or ()):
+                sides.append(
+                    {
+                        "team": self._team(teams, team_id),
+                        "source": source,
+                        "is_winner": winner_id is not None and team_id == winner_id,
+                    }
+                )
+            if slot.get("key") == "final" and winner_id is not None:
+                champion = self._team(teams, winner_id)
+            slots.append(
+                {
+                    "key": slot.get("key"),
+                    "label": slot.get("label"),
+                    "match_id": slot.get("match_id"),
+                    "status": slot.get("status"),
+                    "outcome": slot.get("outcome"),
+                    "net_points": slot.get("net_points"),
+                    "sides": sides,
+                }
+            )
+
+        return {
+            "format": raw.get("format"),
+            "has_teams": any(side["team"] is not None for slot in slots for side in slot["sides"]),
+            "champion": champion,
+            "slots": slots,
         }
 
     def build(
@@ -473,6 +515,7 @@ class WidgetSnapshots:
             "pinned_match": bundle_for(pinned_raw),
             "points_table": self._enriched_points_table(season_id, teams),
             "top_stats": self._enriched_top_stats(season_id, teams),
+            "knockout": self._enriched_knockout(season_id, teams),
         }
 
 

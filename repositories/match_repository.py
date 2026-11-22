@@ -4,10 +4,18 @@ from typing import Optional, List
 from enums.match_category import MatchCategory
 from enums.match_status import MatchStatus
 from services.playoff import (
+    BLUEPRINTS,
     ELIMINATOR,
     FINAL,
+    QUALIFIER1,
+    QUALIFIER2,
+    SLOT_LABELS,
+    bracket_format,
     knockout_fixtures,
+    locked_seeds,
     qualification_tie_groups,
+    seeds_after_ties,
+    seeds_needed,
 )
 from schemas.match_schema import (
     MatchCreateRequest,
@@ -226,18 +234,12 @@ class MatchRepository:
         if existing:
             # Only a match that has not started can take teams, or give them
             # back, when the table changes. A played match stays as it was.
+            # A side may be filled while the other stays TBD.
             if int(existing["Status"]) != MatchStatus.Scheduled.value:
                 return existing
-            both_known = team1_id is not None and team2_id is not None
-            both_open = team1_id is None and team2_id is None
-            changed = both_known and (
-                self._team_changed(existing.get("Team1"), team1_id)
-                or self._team_changed(existing.get("Team2"), team2_id)
-            )
-            cleared = both_open and (
-                existing.get("Team1") is not None or existing.get("Team2") is not None
-            )
-            if changed or cleared:
+            if self._team_changed(existing.get("Team1"), team1_id) or self._team_changed(
+                existing.get("Team2"), team2_id
+            ):
                 cursor = self.db.cursor()
                 cursor.execute(
                     """
@@ -401,21 +403,82 @@ class MatchRepository:
         )
         return int((cursor.fetchone() or {}).get("PendingCount") or 0) > 0
 
+    KNOCKOUT_CATEGORIES = {
+        QUALIFIER1: MatchCategory.Qualifier1,
+        ELIMINATOR: MatchCategory.Eliminator,
+        QUALIFIER2: MatchCategory.Qualifier2,
+        FINAL: MatchCategory.Final,
+    }
+
     def _apply_knockout_fixtures(self, season_id: int, fixtures: list) -> None:
-        categories = {FINAL: MatchCategory.Final, ELIMINATOR: MatchCategory.Eliminator}
         for slot, team1_id, team2_id in fixtures:
-            self._ensure_knockout_match(season_id, categories[slot], team1_id, team2_id)
+            self._ensure_knockout_match(season_id, self.KNOCKOUT_CATEGORIES[slot], team1_id, team2_id)
 
-    def _sync_playoff_schedule(self, season_id: int) -> None:
-        # A Golden Strike inside a finished final or eliminator is the
-        # operator's choice on that match. This method only builds the
-        # bracket, and the qualification Golden Strikes that the table needs.
+    def _remaining_league_matches(self, season_id: int) -> dict:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT TeamId, COUNT(*) AS Remaining
+            FROM (
+                SELECT Team1 AS TeamId FROM tblMatches
+                WHERE SeasonId = %s AND Category = %s AND Status <> 3 AND Void = 0
+                UNION ALL
+                SELECT Team2 AS TeamId FROM tblMatches
+                WHERE SeasonId = %s AND Category = %s AND Status <> 3 AND Void = 0
+            ) AS Pending
+            WHERE TeamId IS NOT NULL
+            GROUP BY TeamId
+            """,
+            (season_id, MatchCategory.League.value, season_id, MatchCategory.League.value),
+        )
+        return {int(row["TeamId"]): int(row["Remaining"]) for row in cursor.fetchall()}
+
+    def _knockout_matches(self, season_id: int) -> dict:
+        """The stored match for each bracket slot (the first one when there are duplicates)."""
+        slot_of = {category.value: slot for slot, category in self.KNOCKOUT_CATEGORIES.items()}
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT Id, Category, Status, Team1, Team2, Outcome, NetPoints, [Order]
+            FROM tblMatches
+            WHERE SeasonId = %s
+              AND Category IN (%s, %s, %s, %s)
+              AND Void = 0
+            ORDER BY [Order] ASC, Id ASC
+            """,
+            (season_id, *slot_of.keys()),
+        )
+        matches: dict = {}
+        for row in cursor.fetchall():
+            matches.setdefault(slot_of[int(row["Category"])], row)
+        return matches
+
+    def _knockout_results(self, season_id: int, matches: dict) -> dict:
+        results = {}
+        for slot, row in matches.items():
+            winner = self._knockout_winner(season_id, row)
+            if winner is None:
+                continue
+            loser = row["Team2"] if int(row["Team1"]) == winner else row["Team1"]
+            results[slot] = (winner, int(loser))
+        return results
+
+    def _knockout_plan(self, season_id: int, participant_count: int, schedule_golden_strikes: bool = False) -> list:
+        """The bracket as the table stands now: a team is placed once its place cannot change.
+
+        While the league is still being played, only places that no remaining result can change are placed.
+        When it is finished, ties keep their places open until a Golden Strike decides them.
+        """
+        needed = seeds_needed(participant_count)
+        results = self._knockout_results(season_id, self._knockout_matches(season_id))
+
         if not self._all_league_matches_completed(season_id):
-            return
-
-        participant_count = self._participant_count(season_id)
-        if participant_count < 2:
-            return
+            seeds = locked_seeds(
+                self._get_ranked_league_table(season_id),
+                self._remaining_league_matches(season_id),
+                needed,
+            )
+            return knockout_fixtures(participant_count, seeds, None, False, results)
 
         ranked_rows = [
             row
@@ -423,34 +486,63 @@ class MatchRepository:
             if int(row.get("MatchesPlayed") or 0) > 0
         ]
         ranked_team_ids = [int(row["TeamId"]) for row in ranked_rows]
-
-        if self._has_pending_season_golden_strikes(season_id):
-            self._apply_knockout_fixtures(
-                season_id,
-                knockout_fixtures(participant_count, ranked_team_ids, None, ties_pending=True),
-            )
-            return
-
         tie_groups = qualification_tie_groups(ranked_rows, participant_count)
-        if tie_groups:
+
+        if schedule_golden_strikes and tie_groups and not self._has_pending_season_golden_strikes(season_id):
             for team_ids in tie_groups:
                 self._schedule_golden_strike_round(season_id, team_ids)
-            self._apply_knockout_fixtures(
-                season_id,
-                knockout_fixtures(participant_count, ranked_team_ids, None, ties_pending=True),
-            )
+
+        seeds = seeds_after_ties(ranked_team_ids, tie_groups, needed)
+        return knockout_fixtures(participant_count, seeds, None, False, results)
+
+    def _sync_playoff_schedule(self, season_id: int) -> None:
+        # A Golden Strike inside a finished knockout match is the operator's
+        # choice on that match. This method builds the bracket, fills in each
+        # team as soon as its place is settled, moves winners and losers on, and
+        # schedules the qualification Golden Strikes that the table needs.
+        participant_count = self._participant_count(season_id)
+        if bracket_format(participant_count) is None:
             return
 
-        eliminator = self._find_knockout_match(season_id, MatchCategory.Eliminator)
-        self._apply_knockout_fixtures(
-            season_id,
-            knockout_fixtures(
-                participant_count,
-                ranked_team_ids,
-                self._knockout_winner(season_id, eliminator),
-                ties_pending=False,
-            ),
-        )
+        fixtures = self._knockout_plan(season_id, participant_count, schedule_golden_strikes=True)
+        if not any(team1 is not None or team2 is not None for _, team1, team2 in fixtures) and not (
+            self._all_league_matches_completed(season_id)
+        ):
+            # Nothing is settled yet and the league is still on. Show the bracket from the widget, not the schedule.
+            return
+        self._apply_knockout_fixtures(season_id, fixtures)
+
+    def knockout_view(self, season_id: int) -> dict:
+        """The bracket for display, with TBD sides where a team is not known yet. Reads only."""
+        participant_count = self._participant_count(season_id)
+        kind = bracket_format(participant_count)
+        if kind is None:
+            return {"format": None, "slots": []}
+
+        planned = {slot: (team1, team2) for slot, team1, team2 in self._knockout_plan(season_id, participant_count)}
+        stored = self._knockout_matches(season_id)
+
+        slots = []
+        for slot, sources in BLUEPRINTS[kind]:
+            row = stored.get(slot)
+            plan1, plan2 = planned.get(slot, (None, None))
+            team1 = row["Team1"] if row and row["Team1"] is not None else plan1
+            team2 = row["Team2"] if row and row["Team2"] is not None else plan2
+            slots.append(
+                {
+                    "key": slot,
+                    "label": SLOT_LABELS[slot],
+                    "sources": list(sources),
+                    "match_id": int(row["Id"]) if row else None,
+                    "status": int(row["Status"]) if row else None,
+                    "outcome": int(row["Outcome"]) if row and row.get("Outcome") is not None else None,
+                    "net_points": row.get("NetPoints") if row else None,
+                    "team1_id": int(team1) if team1 is not None else None,
+                    "team2_id": int(team2) if team2 is not None else None,
+                    "winner_id": self._knockout_winner(season_id, row) if row else None,
+                }
+            )
+        return {"format": kind, "slots": slots}
 
     def _find_knockout_match(self, season_id: int, category: MatchCategory) -> Optional[dict]:
         cursor = self.db.cursor(dictionary=True)

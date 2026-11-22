@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_serializer, field_validator, model_
 
 WidgetType = Literal["season_flow", "scorecard", "toss", "fixtures", "points_table", "stats"]
 WidgetStatus = Literal["active", "expired", "revoked"]
-RotationKind = Literal["points_table", "stats", "fixtures", "last_result", "next_match", "clean_pause"]
+RotationKind = Literal["points_table", "stats", "bracket", "fixtures", "last_result", "next_match", "clean_pause"]
 DirectorMode = Literal["auto", "clean", "pin"]
 DirectorCard = Literal[
     "match_ready",
@@ -15,6 +15,7 @@ DirectorCard = Literal[
     "scorecard",
     "points_table",
     "stats",
+    "bracket",
     "fixtures",
     "next_match",
 ]
@@ -80,6 +81,7 @@ def default_flow_rotation() -> list[FlowRotationStep]:
     return [
         FlowRotationStep(id="step-points", kind="points_table", duration_sec=POINTS_TABLE_SECONDS, enabled=True),
         FlowRotationStep(id="step-stats", kind="stats", duration_sec=15, enabled=True),
+        FlowRotationStep(id="step-bracket", kind="bracket", duration_sec=20, enabled=True),
         FlowRotationStep(id="step-fixtures", kind="fixtures", duration_sec=15, enabled=True),
     ]
 

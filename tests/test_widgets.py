@@ -175,6 +175,17 @@ class FakeWidgetSource:
             ],
         }
 
+    def knockout(self, season_id: int) -> dict:
+        return {
+            "format": "eliminator",
+            "slots": [
+                {"key": "eliminator", "label": "Eliminator", "sources": ["#2", "#3"], "match_id": None, "status": None,
+                 "outcome": None, "net_points": None, "team1_id": 20, "team2_id": None, "winner_id": None},
+                {"key": "final", "label": "Final", "sources": ["#1", "Winner of Eliminator"], "match_id": 9, "status": 1,
+                 "outcome": 3, "net_points": None, "team1_id": 10, "team2_id": None, "winner_id": None},
+            ],
+        }
+
     def head_to_head(self, team1_id: int | None, team2_id: int | None) -> dict | None:
         if not team1_id or not team2_id:
             return None
@@ -468,6 +479,16 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(snap["next_scheduled_match"]["players"]["team1"][0]["coins_pocketed"], 0)
         self.assertEqual(snap["points_table"]["standings"][0]["rank"], 1)
         self.assertEqual(snap["top_stats"]["players"][0]["name"], "Ana Lee")
+        knockout = snap["knockout"]
+        self.assertEqual(knockout["format"], "eliminator")
+        self.assertTrue(knockout["has_teams"])
+        self.assertIsNone(knockout["champion"])
+        eliminator, final = knockout["slots"]
+        self.assertEqual(eliminator["sides"][0]["team"]["name"], "Kolkata Kings")
+        self.assertIsNone(eliminator["sides"][1]["team"])
+        self.assertEqual(eliminator["sides"][1]["source"], "#3")
+        self.assertEqual(final["sides"][0]["team"]["name"], "Dum Dum Diamonds")
+        self.assertEqual(final["sides"][1]["source"], "Winner of Eliminator")
         self.assertIn("server_now", snap)
         for secret in ("token", "token_hash", "created_by", "cpl_widget_"):
             self.assertNotIn(secret, json.dumps(snap))

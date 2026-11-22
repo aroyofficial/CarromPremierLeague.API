@@ -1,6 +1,11 @@
 import unittest
 
-from services.playoff import knockout_fixtures, qualification_tie_groups
+from services.playoff import (
+    knockout_fixtures,
+    locked_seeds,
+    qualification_tie_groups,
+    seeds_after_ties,
+)
 
 
 def row(team_id, points=4, net=0, head_to_head=0, golden=0):
@@ -71,10 +76,10 @@ class KnockoutFixtureTests(unittest.TestCase):
     def test_unresolved_tie_keeps_the_final_as_tbd(self):
         self.assertEqual(knockout_fixtures(4, [1, 2, 3, 4], None, True), [("final", None, None)])
 
-    def test_more_than_four_teams_get_an_eliminator_and_a_tbd_final(self):
+    def test_more_than_four_teams_send_first_straight_to_the_final(self):
         self.assertEqual(
             knockout_fixtures(6, [1, 2, 3, 4, 5, 6], None, False),
-            [("eliminator", 2, 3), ("final", None, None)],
+            [("eliminator", 2, 3), ("final", 1, None)],
         )
 
     def test_eliminator_winner_fills_both_final_teams(self):
@@ -91,6 +96,98 @@ class KnockoutFixtureTests(unittest.TestCase):
 
     def test_one_team_schedules_nothing(self):
         self.assertEqual(knockout_fixtures(1, [1], None, False), [])
+
+    def test_unsettled_places_stay_tbd(self):
+        self.assertEqual(knockout_fixtures(4, [1, None, 3, 4], None, False), [("final", 1, None)])
+        self.assertEqual(
+            knockout_fixtures(6, [None, 2, None, 4], None, False),
+            [("eliminator", 2, None), ("final", None, None)],
+        )
+
+    def test_eliminator_result_moves_the_winner_into_the_final(self):
+        self.assertEqual(
+            knockout_fixtures(6, [1, 2, 3], None, False, {"eliminator": (3, 2)}),
+            [("eliminator", 2, 3), ("final", 1, 3)],
+        )
+
+
+class FullBracketTests(unittest.TestCase):
+    TEAMS = list(range(1, 9))
+
+    def test_eight_teams_lay_out_the_whole_bracket(self):
+        self.assertEqual(
+            knockout_fixtures(8, self.TEAMS, None, False),
+            [
+                ("qualifier1", 1, 2),
+                ("eliminator", 3, 4),
+                ("qualifier2", None, None),
+                ("final", None, None),
+            ],
+        )
+
+    def test_pending_tie_keeps_every_match_tbd(self):
+        self.assertEqual(
+            knockout_fixtures(8, self.TEAMS, None, True),
+            [
+                ("qualifier1", None, None),
+                ("eliminator", None, None),
+                ("qualifier2", None, None),
+                ("final", None, None),
+            ],
+        )
+
+    def test_results_move_winners_and_losers_forward(self):
+        results = {"qualifier1": (2, 1), "eliminator": (3, 4)}
+        self.assertEqual(
+            knockout_fixtures(8, self.TEAMS, None, False, results),
+            [
+                ("qualifier1", 1, 2),
+                ("eliminator", 3, 4),
+                ("qualifier2", 3, 1),
+                ("final", 2, None),
+            ],
+        )
+
+    def test_both_qualifier_winners_meet_in_the_final(self):
+        results = {"qualifier1": (2, 1), "eliminator": (3, 4), "qualifier2": (1, 3)}
+        self.assertEqual(knockout_fixtures(8, self.TEAMS, None, False, results)[-1], ("final", 2, 1))
+
+    def test_eight_team_tie_boundaries_cover_the_four_qualifying_places(self):
+        rows = [row(i, points=20 - 2 * i) for i in range(1, 9)]
+        self.assertEqual(qualification_tie_groups(rows, 8), [])
+        rows[3] = row(4, points=10)
+        rows[4] = row(5, points=10)
+        rows[2] = row(3, points=12)
+        self.assertEqual(qualification_tie_groups(rows, 8), [[4, 5]])
+
+
+class SeedTests(unittest.TestCase):
+    def test_tied_places_are_dropped(self):
+        self.assertEqual(seeds_after_ties([1, 2, 3, 4], [[2, 3]], 4), [1, None, None, 4])
+
+    def test_clear_table_keeps_every_seed(self):
+        self.assertEqual(seeds_after_ties([5, 6, 7, 8], [], 3), [5, 6, 7])
+
+    def test_short_table_pads_with_none(self):
+        self.assertEqual(seeds_after_ties([5], [], 3), [5, None, None])
+
+    def test_leader_locks_when_nobody_can_catch_up(self):
+        rows = [row(1, points=10), row(2, points=4), row(3, points=2)]
+        remaining = {1: 0, 2: 1, 3: 1}
+        self.assertEqual(locked_seeds(rows, remaining, 3), [1, None, None])
+
+    def test_open_race_locks_nothing(self):
+        rows = [row(1, points=4), row(2, points=4), row(3, points=2)]
+        remaining = {1: 2, 2: 2, 3: 2}
+        self.assertEqual(locked_seeds(rows, remaining, 3), [None, None, None])
+
+    def test_finished_league_with_distinct_points_locks_all(self):
+        rows = [row(1, points=6), row(2, points=4), row(3, points=2)]
+        self.assertEqual(locked_seeds(rows, {}, 3), [1, 2, 3])
+
+    def test_a_possible_tie_keeps_the_place_open(self):
+        rows = [row(1, points=6), row(2, points=4), row(3, points=2)]
+        self.assertEqual(locked_seeds(rows, {2: 1, 3: 2}, 3), [None, None, None])
 
 
 if __name__ == "__main__":
