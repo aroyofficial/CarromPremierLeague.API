@@ -711,6 +711,20 @@ class MatchRepository:
             fields.append("ConcludedAt = NULL")
 
         if update_data.get("status") == MatchStatus.InProgress.value:
+            # The next match is on the table, so earlier finished matches no longer wait on the stream.
+            cursor.execute(
+                """
+                UPDATE tblMatches
+                SET ConcludedAt = SYSUTCDATETIME(),
+                    UpdatedAt = SYSUTCDATETIME()
+                WHERE SeasonId = (SELECT SeasonId FROM tblMatches WHERE Id = %s)
+                  AND Id <> %s
+                  AND Status = %s
+                  AND ConcludedAt IS NULL
+                  AND Void = 0
+                """,
+                (match_id, match_id, MatchStatus.Played.value),
+            )
             fields.append("StartedAt = COALESCE(StartedAt, SYSUTCDATETIME())")
         if update_data.get("status") == MatchStatus.Played.value:
             fields.append("CompletedAt = COALESCE(CompletedAt, SYSUTCDATETIME())")

@@ -298,6 +298,11 @@ class MatchLifecycleRuleTests(unittest.TestCase):
                 pass
 
         repo = MatchRepository(FakeDb())
+        repo.update(7, MatchUpdateRequest(status=MatchStatus.InProgress.value))
+        self.assertTrue(
+            any("SET ConcludedAt = SYSUTCDATETIME()" in sql and "ConcludedAt IS NULL" in sql for sql in executed)
+        )
+        executed.clear()
         repo.update(7, MatchUpdateRequest(is_concluded=True))
         self.assertTrue(any("ConcludedAt = COALESCE(ConcludedAt, SYSUTCDATETIME())" in sql for sql in executed))
         executed.clear()
