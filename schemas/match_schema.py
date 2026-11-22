@@ -45,6 +45,8 @@ class MatchUpdateRequest(BaseModel):
     outcome: Optional[int] = Field(default=None, ge=1, le=3)
     toss_outcome: Optional[int] = Field(default=None, ge=1, le=3)
     is_ready: Optional[bool] = None
+    # Marks a finished match complete so the stream moves on from its result, or reopens it.
+    is_concluded: Optional[bool] = None
 
 
 class MatchResponse(BaseModel):
@@ -66,9 +68,10 @@ class MatchResponse(BaseModel):
     started_at: Optional[datetime] = None
     extra_started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    concluded_at: Optional[datetime] = None
 
     # SQL Server stores these with SYSUTCDATETIME() and returns them without an offset.
-    @field_serializer("ready_at", "started_at", "extra_started_at", "completed_at")
+    @field_serializer("ready_at", "started_at", "extra_started_at", "completed_at", "concluded_at")
     def _utc(self, value: Optional[datetime]) -> Optional[str]:
         if value is None:
             return None

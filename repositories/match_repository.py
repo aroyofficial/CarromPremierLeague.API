@@ -16,6 +16,7 @@ from services.playoff import (
     qualification_tie_groups,
     seeds_after_ties,
     seeds_needed,
+    tie_breaker_groups,
 )
 from schemas.match_schema import (
     MatchCreateRequest,
@@ -68,6 +69,7 @@ class MatchRepository:
             started_at=row.get("StartedAt"),
             extra_started_at=row.get("ExtraStartedAt"),
             completed_at=row.get("CompletedAt"),
+            concluded_at=row.get("ConcludedAt"),
         )
 
     @staticmethod
@@ -351,43 +353,6 @@ class MatchRepository:
             return int(golden_strike["Team2"])
         return None
 
-    def _schedule_knockout_draw_golden_strikes(self, season_id: int) -> None:
-        cursor = self.db.cursor(dictionary=True)
-        cursor.execute(
-            """
-            SELECT Team1, Team2, [Order]
-            FROM tblMatches
-            WHERE SeasonId = %s
-              AND Category IN (%s, %s, %s, %s)
-              AND Status = 3
-              AND Outcome = 3
-              AND Extra IS NOT NULL
-              AND Extra > 0
-              AND Team1 IS NOT NULL
-              AND Team2 IS NOT NULL
-              AND Void = 0
-            """,
-            (
-                season_id,
-                MatchCategory.Eliminator.value,
-                MatchCategory.Qualifier1.value,
-                MatchCategory.Qualifier2.value,
-                MatchCategory.Final.value,
-            ),
-        )
-        drawn_matches = cursor.fetchall()
-        for match in drawn_matches:
-            team1_id = int(match["Team1"])
-            team2_id = int(match["Team2"])
-            if self._latest_golden_strike(
-                season_id,
-                team1_id,
-                team2_id,
-                int(match.get("Order") or 0),
-            ):
-                continue
-            self._schedule_golden_strike_round(season_id, [team1_id, team2_id])
-
     def _has_pending_season_golden_strikes(self, season_id: int) -> bool:
         cursor = self.db.cursor(dictionary=True)
         cursor.execute(
@@ -512,6 +477,48 @@ class MatchRepository:
             return
         self._apply_knockout_fixtures(season_id, fixtures)
 
+    def _golden_strike_rows(self, season_id: int) -> List[dict]:
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT Id, Team1, Team2, Status, Outcome
+            FROM tblMatches
+            WHERE SeasonId = %s
+              AND Category = %s
+              AND Void = 0
+            ORDER BY [Order] ASC, Id ASC
+            """,
+            (season_id, MatchCategory.GoldenStrike.value),
+        )
+        rows = []
+        for row in cursor.fetchall():
+            if row["Team1"] is None or row["Team2"] is None:
+                continue
+            outcome = int(row.get("Outcome") or 3)
+            winner = int(row["Team1"]) if outcome == 1 else int(row["Team2"]) if outcome == 2 else None
+            rows.append(
+                {
+                    "match_id": int(row["Id"]),
+                    "team1": int(row["Team1"]),
+                    "team2": int(row["Team2"]),
+                    "status": int(row["Status"]),
+                    "winner": winner,
+                }
+            )
+        return rows
+
+    def tie_breakers(self, season_id: int) -> dict:
+        """Ties between teams level on points at a knockout place, once the league stage is finished. Reads only."""
+        participant_count = self._participant_count(season_id)
+        complete = self._all_league_matches_completed(season_id)
+        if bracket_format(participant_count) is None or not complete:
+            return {"league_complete": complete, "groups": []}
+        ranked = [row for row in self._get_ranked_league_table(season_id) if int(row.get("MatchesPlayed") or 0) > 0]
+        return {
+            "league_complete": True,
+            "groups": tie_breaker_groups(ranked, participant_count, self._golden_strike_rows(season_id)),
+        }
+
     def knockout_view(self, season_id: int) -> dict:
         """The bracket for display, with TBD sides where a team is not known yet. Reads only."""
         participant_count = self._participant_count(season_id)
@@ -528,6 +535,7 @@ class MatchRepository:
             plan1, plan2 = planned.get(slot, (None, None))
             team1 = row["Team1"] if row and row["Team1"] is not None else plan1
             team2 = row["Team2"] if row and row["Team2"] is not None else plan2
+            winner_id = self._knockout_winner(season_id, row) if row else None
             slots.append(
                 {
                     "key": slot,
@@ -539,7 +547,9 @@ class MatchRepository:
                     "net_points": row.get("NetPoints") if row else None,
                     "team1_id": int(team1) if team1 is not None else None,
                     "team2_id": int(team2) if team2 is not None else None,
-                    "winner_id": self._knockout_winner(season_id, row) if row else None,
+                    "winner_id": winner_id,
+                    # A finished knockout match that ended level and was not taken to a Golden Strike has no winner.
+                    "tied": bool(row) and int(row["Status"]) == MatchStatus.Played.value and winner_id is None,
                 }
             )
         return {"format": kind, "slots": slots}
@@ -695,6 +705,11 @@ class MatchRepository:
         elif "is_ready" in update_data and update_data["is_ready"] is False:
             fields.append("ReadyAt = NULL")
 
+        if update_data.get("is_concluded") is True:
+            fields.append("ConcludedAt = COALESCE(ConcludedAt, SYSUTCDATETIME())")
+        elif "is_concluded" in update_data and update_data["is_concluded"] is False:
+            fields.append("ConcludedAt = NULL")
+
         if update_data.get("status") == MatchStatus.InProgress.value:
             fields.append("StartedAt = COALESCE(StartedAt, SYSUTCDATETIME())")
         if update_data.get("status") == MatchStatus.Played.value:
@@ -749,6 +764,7 @@ class MatchRepository:
                 StartedAt = NULL,
                 ExtraStartedAt = NULL,
                 CompletedAt = NULL,
+                ConcludedAt = NULL,
                 UpdatedAt = SYSUTCDATETIME()
             WHERE Id = %s AND Void = 0
             """,

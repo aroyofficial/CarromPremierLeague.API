@@ -175,6 +175,26 @@ class FakeWidgetSource:
             ],
         }
 
+    def tie_breakers(self, season_id: int) -> dict:
+        return {
+            "league_complete": True,
+            "groups": [
+                {
+                    "first_place": 2,
+                    "last_place": 3,
+                    "status": "golden_strike_pending",
+                    "teams": [
+                        {"team_id": 20, "rank": 2, "points": 4, "net_points": 3, "head_to_head_wins": 0, "golden_strike_wins": 0},
+                        {"team_id": 10, "rank": 3, "points": 4, "net_points": 3, "head_to_head_wins": 0, "golden_strike_wins": 0},
+                    ],
+                    "pairs": [{"upper_id": 20, "lower_id": 10, "decided_by": None, "status": "golden_strike_pending"}],
+                    "golden_strikes": [
+                        {"match_id": 31, "status": 1, "team1": 10, "team2": 20, "winner": None},
+                    ],
+                }
+            ],
+        }
+
     def knockout(self, season_id: int) -> dict:
         return {
             "format": "eliminator",
@@ -293,6 +313,31 @@ class WidgetTests(unittest.TestCase):
         stamped = datetime.fromisoformat(snap["server_now"].replace("Z", "+00:00"))
         self.assertGreaterEqual((stamped - started).total_seconds(), 0.4)
         self.assertRegex(snap["server_now"], r"\.\d{3}Z$")
+
+    def test_a_level_knockout_match_tells_the_widget_which_question_is_open(self):
+        final = self.source.matches[1]
+        final.update(category=2, status=2, started_at="2026-11-21T12:00:00Z", extra_started_at=None, golden_strike=False)
+        # Team 1 is on 4 plus the coin team 2 took of its colour, team 2 on 3: not level.
+        card = self._snapshot(self._create()["token"]).json()["data"]
+        self.assertFalse(card["match"]["level"])
+        self.assertIsNone(card["match"]["decision"])
+
+        # Level 3 - 3, regulation long over: the scorer is asked about extra time.
+        self.source._stats[1][0].update(coins_pocketed=4, single_fines=1, coins_fined=1, opponent_coins_pocketed=0)
+        self.source._stats[1][1].update(coins_pocketed=3, opponent_coins_pocketed=0)
+        card = self._snapshot(self._create()["token"]).json()["data"]
+        self.assertTrue(card["match"]["level"])
+        self.assertEqual(card["match"]["decision"], "extra_time")
+
+        # Extra time over and still level: the question becomes the Golden Strike.
+        final.update(extra_started_at="2026-11-21T12:20:00Z")
+        card = self._snapshot(self._create()["token"]).json()["data"]
+        self.assertEqual(card["match"]["decision"], "golden_strike")
+
+        # A finished knockout match without a winner is flagged as tied.
+        final.update(status=3, outcome=3)
+        card = self._snapshot(self._create()["token"]).json()["data"]
+        self.assertTrue(card["match"]["tied"])
 
     def test_snapshot_match_fields_match_the_public_match_data(self):
         created = self._create()
@@ -479,6 +524,16 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(snap["next_scheduled_match"]["players"]["team1"][0]["coins_pocketed"], 0)
         self.assertEqual(snap["points_table"]["standings"][0]["rank"], 1)
         self.assertEqual(snap["top_stats"]["players"][0]["name"], "Ana Lee")
+        tie = snap["tie_breakers"]
+        self.assertTrue(tie["league_complete"])
+        (group,) = tie["groups"]
+        self.assertEqual((group["first_place"], group["last_place"]), (2, 3))
+        self.assertEqual(group["teams"][0]["team"]["name"], "Kolkata Kings")
+        self.assertEqual(group["pairs"][0]["upper"]["name"], "Kolkata Kings")
+        self.assertIsNone(group["pairs"][0]["decided_by"])
+        self.assertEqual(group["golden_strikes"][0]["match_id"], 31)
+        self.assertIsNone(group["golden_strikes"][0]["winner"])
+
         knockout = snap["knockout"]
         self.assertEqual(knockout["format"], "eliminator")
         self.assertTrue(knockout["has_teams"])

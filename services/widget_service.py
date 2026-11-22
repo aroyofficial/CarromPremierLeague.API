@@ -21,6 +21,7 @@ from schemas.widget_schema import (
     WidgetResponse,
     WidgetUpdateRequest,
 )
+from services.match_rules import colour_scores, knockout_state
 from services.season_service import SeasonService
 from services.stats_service import StatsService
 
@@ -185,6 +186,9 @@ class DbWidgetSnapshotSource:
     def knockout(self, season_id: int) -> dict:
         return self.matches.knockout_view(season_id)
 
+    def tie_breakers(self, season_id: int) -> dict:
+        return self.matches.tie_breakers(season_id)
+
     def head_to_head(self, team1_id: int | None, team2_id: int | None) -> dict | None:
         if not team1_id or not team2_id or team1_id == team2_id:
             return None
@@ -232,8 +236,10 @@ class WidgetSnapshots:
             "started_at": match.get("started_at"),
             "extra_started_at": match.get("extra_started_at"),
             "completed_at": match.get("completed_at"),
+            "concluded_at": match.get("concluded_at"),
             "team1": self._team(teams, match.get("team1")),
             "team2": self._team(teams, match.get("team2")),
+            **self._knockout_state(match),
         }
 
     def _rosters_and_players(self, match: dict) -> tuple[dict[str, list[dict]], dict[str, list[dict]]]:
@@ -268,9 +274,41 @@ class WidgetSnapshots:
             return None
         return getter(match.get("team1"), match.get("team2"))
 
+    def _knockout_state(self, match: dict, players_view: dict[str, list[dict]] | None = None) -> dict:
+        """Level, decision and tied flags for a knockout match, judged by the same rules the API enforces."""
+        scores = None
+        if players_view is not None:
+            totals = {}
+            for side in ("team1", "team2"):
+                rows = players_view.get(side) or []
+                totals[side] = {
+                    "own": sum(int(row.get("coins_pocketed") or 0) for row in rows),
+                    "opponent": sum(int(row.get("opponent_coins_pocketed") or 0) for row in rows),
+                    "fines": sum(
+                        int(row.get("single_fines") or 0) + 2 * int(row.get("double_fines") or 0)
+                        or int(row.get("coins_fined") or 0)
+                        for row in rows
+                    ),
+                }
+            scored = colour_scores(totals)
+            scores = (scored["team1"], scored["team2"])
+        clock = self._clock()
+        return knockout_state(
+            category=match["category"],
+            status=match["status"],
+            scores=scores,
+            started_at=match.get("started_at"),
+            extra_started_at=match.get("extra_started_at"),
+            golden_strike=bool(match.get("golden_strike")),
+            outcome=match.get("outcome"),
+            regulation_seconds=int(clock.get("regulation_minutes", 15)) * 60,
+            extra_seconds=int(clock.get("extra_minutes", 5)) * 60,
+        )
+
     def _match_bundle(self, match: dict, teams: dict[int, dict]) -> dict:
         view = self._match_view(match, teams)
         rosters_view, players_view = self._rosters_and_players(match)
+        view.update(self._knockout_state(match, players_view))
         return {
             "match": view,
             "rosters": rosters_view,
@@ -328,6 +366,44 @@ class WidgetSnapshots:
             "players": players,
         }
 
+    def _enriched_tie_breakers(self, season_id: int, teams: dict[int, dict]) -> dict:
+        """Ties level on points at a knockout place, with the breaker that separated each pair and any Golden Strike."""
+        getter = getattr(self.source, "tie_breakers", None)
+        raw = getter(season_id) if callable(getter) else {"league_complete": False, "groups": []}
+
+        groups = []
+        for group in raw.get("groups") or []:
+            groups.append(
+                {
+                    "first_place": group["first_place"],
+                    "last_place": group["last_place"],
+                    "status": group["status"],
+                    "teams": [
+                        {**row, "team": self._team(teams, row["team_id"])} for row in group["teams"]
+                    ],
+                    "pairs": [
+                        {
+                            "upper": self._team(teams, pair["upper_id"]),
+                            "lower": self._team(teams, pair["lower_id"]),
+                            "decided_by": pair["decided_by"],
+                            "status": pair["status"],
+                        }
+                        for pair in group["pairs"]
+                    ],
+                    "golden_strikes": [
+                        {
+                            "match_id": match["match_id"],
+                            "status": match["status"],
+                            "team1": self._team(teams, match["team1"]),
+                            "team2": self._team(teams, match["team2"]),
+                            "winner": self._team(teams, match["winner"]),
+                        }
+                        for match in group["golden_strikes"]
+                    ],
+                }
+            )
+        return {"league_complete": bool(raw.get("league_complete")), "groups": groups}
+
     def _enriched_knockout(self, season_id: int, teams: dict[int, dict]) -> dict:
         """The bracket with each side as a team, or as the place it comes from while the team is not known."""
         getter = getattr(self.source, "knockout", None)
@@ -356,6 +432,7 @@ class WidgetSnapshots:
                     "status": slot.get("status"),
                     "outcome": slot.get("outcome"),
                     "net_points": slot.get("net_points"),
+                    "tied": bool(slot.get("tied")),
                     "sides": sides,
                 }
             )
@@ -403,6 +480,7 @@ class WidgetSnapshots:
         teams = self.source.teams()
         view = self._match_view(match, teams)
         rosters_view, players_view = self._rosters_and_players(match)
+        view.update(self._knockout_state(match, players_view))
         if widget_type == "toss":
             return {
                 "type": "toss",
@@ -516,6 +594,7 @@ class WidgetSnapshots:
             "points_table": self._enriched_points_table(season_id, teams),
             "top_stats": self._enriched_top_stats(season_id, teams),
             "knockout": self._enriched_knockout(season_id, teams),
+            "tie_breakers": self._enriched_tie_breakers(season_id, teams),
         }
 
 

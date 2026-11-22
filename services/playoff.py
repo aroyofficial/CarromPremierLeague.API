@@ -79,17 +79,20 @@ def tie_key(row: dict) -> tuple:
     )
 
 
-def qualification_tie_groups(ranked_rows: list, participant_count: int) -> list[list[int]]:
+def _boundaries(participant_count: int) -> list[int]:
     # Boundaries sit between the places a tie can still change.
     # Four or fewer: 1st and 2nd. Five to seven: 1st, and the eliminator
     # places 2nd and 3rd. Eight or more: the four places that feed Qualifier 1
     # and the eliminator. Each includes the cut with the first team that misses out.
     if participant_count <= 4:
-        boundaries = [1, 2]
-    elif participant_count < FULL_BRACKET_MIN_TEAMS:
-        boundaries = [1, 2, 3]
-    else:
-        boundaries = [1, 2, 3, 4]
+        return [1, 2]
+    if participant_count < FULL_BRACKET_MIN_TEAMS:
+        return [1, 2, 3]
+    return [1, 2, 3, 4]
+
+
+def qualification_tie_groups(ranked_rows: list, participant_count: int) -> list[list[int]]:
+    boundaries = _boundaries(participant_count)
     groups: list[list[int]] = []
     seen: set[tuple[int, ...]] = set()
 
@@ -111,6 +114,100 @@ def qualification_tie_groups(ranked_rows: list, participant_count: int) -> list[
             seen.add(group)
             groups.append(list(group))
     return groups
+
+
+BREAKER_NET_COINS = "net_coins"
+BREAKER_HEAD_TO_HEAD = "head_to_head"
+BREAKER_GOLDEN_STRIKE = "golden_strike"
+
+PAIR_DECIDED = "decided"
+PAIR_GOLDEN_STRIKE_PENDING = "golden_strike_pending"
+PAIR_GOLDEN_STRIKE_DUE = "golden_strike_due"
+
+
+def _breaker_between(upper: dict, lower: dict) -> str | None:
+    """The first tie-breaker, in table order, that separates two teams level on points."""
+    if int(upper.get("TotalNetPoints") or 0) != int(lower.get("TotalNetPoints") or 0):
+        return BREAKER_NET_COINS
+    if int(upper.get("HeadToHeadWins") or 0) != int(lower.get("HeadToHeadWins") or 0):
+        return BREAKER_HEAD_TO_HEAD
+    if int(upper.get("GoldenStrikeWins") or 0) != int(lower.get("GoldenStrikeWins") or 0):
+        return BREAKER_GOLDEN_STRIKE
+    return None
+
+
+def tie_breaker_groups(ranked_rows: list, participant_count: int, golden_strikes: list | None = None) -> list[dict]:
+    """Runs of teams level on points at a place that decides a knockout berth, each pair with its breaker.
+
+    `golden_strikes` lists the Golden Strike matches of the season as
+    {"match_id", "team1", "team2", "status", "winner"}. A pair the breakers cannot separate waits on a
+    Golden Strike between those two teams.
+    """
+    golden_strikes = golden_strikes or []
+    groups: list[dict] = []
+    seen: set[tuple[int, ...]] = set()
+
+    def points(index: int) -> int:
+        return int(ranked_rows[index].get("Points") or 0)
+
+    for boundary in _boundaries(participant_count):
+        if boundary >= len(ranked_rows) or points(boundary - 1) != points(boundary):
+            continue
+        start, end = boundary - 1, boundary
+        while start > 0 and points(start - 1) == points(boundary):
+            start -= 1
+        while end + 1 < len(ranked_rows) and points(end + 1) == points(boundary):
+            end += 1
+
+        team_ids = tuple(int(row["TeamId"]) for row in ranked_rows[start : end + 1])
+        if team_ids in seen:
+            continue
+        seen.add(team_ids)
+        groups.append(_tie_group(ranked_rows[start : end + 1], start + 1, team_ids, golden_strikes))
+    return groups
+
+
+def _tie_group(rows: list, first_place: int, team_ids: tuple, golden_strikes: list) -> dict:
+    members = set(team_ids)
+    group_strikes = [match for match in golden_strikes if match["team1"] in members and match["team2"] in members]
+    pairs = []
+    for upper, lower in zip(rows, rows[1:]):
+        upper_id, lower_id = int(upper["TeamId"]), int(lower["TeamId"])
+        breaker = _breaker_between(upper, lower)
+        if breaker is not None:
+            status = PAIR_DECIDED
+        elif any({m["team1"], m["team2"]} == {upper_id, lower_id} and m["status"] != 3 for m in group_strikes):
+            status = PAIR_GOLDEN_STRIKE_PENDING
+        else:
+            status = PAIR_GOLDEN_STRIKE_DUE
+        pairs.append({"upper_id": upper_id, "lower_id": lower_id, "decided_by": breaker, "status": status})
+
+    statuses = {pair["status"] for pair in pairs}
+    if statuses == {PAIR_DECIDED}:
+        status = PAIR_DECIDED
+    elif PAIR_GOLDEN_STRIKE_PENDING in statuses:
+        status = PAIR_GOLDEN_STRIKE_PENDING
+    else:
+        status = PAIR_GOLDEN_STRIKE_DUE
+
+    return {
+        "first_place": first_place,
+        "last_place": first_place + len(rows) - 1,
+        "status": status,
+        "teams": [
+            {
+                "team_id": int(row["TeamId"]),
+                "rank": first_place + index,
+                "points": int(row.get("Points") or 0),
+                "net_points": int(row.get("TotalNetPoints") or 0),
+                "head_to_head_wins": int(row.get("HeadToHeadWins") or 0),
+                "golden_strike_wins": int(row.get("GoldenStrikeWins") or 0),
+            }
+            for index, row in enumerate(rows)
+        ],
+        "pairs": pairs,
+        "golden_strikes": sorted(group_strikes, key=lambda match: match["match_id"]),
+    }
 
 
 def seeds_after_ties(ranked_team_ids: list[int], tie_groups: list[list[int]], needed: int) -> list[int | None]:

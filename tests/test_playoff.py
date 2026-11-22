@@ -5,6 +5,7 @@ from services.playoff import (
     locked_seeds,
     qualification_tie_groups,
     seeds_after_ties,
+    tie_breaker_groups,
 )
 
 
@@ -188,6 +189,70 @@ class SeedTests(unittest.TestCase):
     def test_a_possible_tie_keeps_the_place_open(self):
         rows = [row(1, points=6), row(2, points=4), row(3, points=2)]
         self.assertEqual(locked_seeds(rows, {2: 1, 3: 2}, 3), [None, None, None])
+
+
+def strike(match_id, team1, team2, status=3, winner=None):
+    return {"match_id": match_id, "team1": team1, "team2": team2, "status": status, "winner": winner}
+
+
+class TieBreakerGroupTests(unittest.TestCase):
+    def test_a_clear_table_has_no_tie_breakers(self):
+        rows = [row(1, points=6), row(2, points=4), row(3, points=2), row(4, points=0)]
+        self.assertEqual(tie_breaker_groups(rows, 4), [])
+
+    def test_net_coins_separate_teams_level_on_points_for_first(self):
+        rows = [row(2, points=4, net=7), row(1, points=4, net=3), row(3, points=2), row(4, points=0)]
+        (group,) = tie_breaker_groups(rows, 4)
+        self.assertEqual((group["first_place"], group["last_place"]), (1, 2))
+        self.assertEqual(group["pairs"][0]["decided_by"], "net_coins")
+        self.assertEqual(group["pairs"][0]["upper_id"], 2)
+        self.assertEqual(group["status"], "decided")
+        self.assertEqual([team["rank"] for team in group["teams"]], [1, 2])
+
+    def test_head_to_head_separates_teams_level_on_net_coins(self):
+        rows = [row(1, points=4, head_to_head=1), row(2, points=4, head_to_head=0), row(3, points=2), row(4, points=0)]
+        (group,) = tie_breaker_groups(rows, 4)
+        self.assertEqual(group["pairs"][0]["decided_by"], "head_to_head")
+        self.assertEqual(group["status"], "decided")
+
+    def test_teams_level_on_every_breaker_wait_for_golden_strike(self):
+        rows = [row(1, points=4), row(2, points=4), row(3, points=2), row(4, points=0)]
+        (group,) = tie_breaker_groups(rows, 4)
+        self.assertIsNone(group["pairs"][0]["decided_by"])
+        self.assertEqual(group["pairs"][0]["status"], "golden_strike_due")
+        self.assertEqual(group["status"], "golden_strike_due")
+        self.assertEqual(group["golden_strikes"], [])
+
+    def test_a_pending_golden_strike_between_the_pair_is_shown_as_pending(self):
+        rows = [row(1, points=4), row(2, points=4), row(3, points=2), row(4, points=0)]
+        group = tie_breaker_groups(rows, 4, [strike(9, 1, 2, status=1)])[0]
+        self.assertEqual(group["pairs"][0]["status"], "golden_strike_pending")
+        self.assertEqual(group["status"], "golden_strike_pending")
+        self.assertEqual([match["match_id"] for match in group["golden_strikes"]], [9])
+
+    def test_a_played_golden_strike_decides_the_pair(self):
+        rows = [row(1, points=4, golden=1), row(2, points=4, golden=0), row(3, points=2), row(4, points=0)]
+        group = tie_breaker_groups(rows, 4, [strike(9, 1, 2, status=3, winner=1)])[0]
+        self.assertEqual(group["pairs"][0]["decided_by"], "golden_strike")
+        self.assertEqual(group["status"], "decided")
+
+    def test_a_tie_below_the_knockout_places_is_ignored(self):
+        rows = [row(1, points=6), row(2, points=4), row(3, points=0), row(4, points=0)]
+        self.assertEqual(tie_breaker_groups(rows, 4), [])
+
+    def test_six_teams_show_the_tie_across_the_eliminator_cut(self):
+        rows = [row(1, points=8), row(2, points=4), row(3, points=2), row(4, points=2), row(5, points=0), row(6, points=0)]
+        groups = tie_breaker_groups(rows, 6)
+        self.assertEqual([(group["first_place"], group["last_place"]) for group in groups], [(3, 4)])
+
+    def test_a_three_way_tie_lists_each_pair_in_table_order(self):
+        rows = [row(2, points=6, net=5), row(3, points=6, net=5), row(1, points=6, net=2), row(4, points=0)]
+        (group,) = tie_breaker_groups(rows, 4)
+        self.assertEqual(
+            [(pair["upper_id"], pair["lower_id"], pair["decided_by"]) for pair in group["pairs"]],
+            [(2, 3, None), (3, 1, "net_coins")],
+        )
+        self.assertEqual(group["status"], "golden_strike_due")
 
 
 if __name__ == "__main__":

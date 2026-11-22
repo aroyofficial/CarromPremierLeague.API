@@ -13,10 +13,13 @@ from enums.match_status import MatchStatus
 from enums.match_category import MatchCategory
 from enums.match_outcome import MatchOutcome
 from repositories.settings_repository import SettingsRepository
-from services.match_rules import validate_lifecycle_update
-
-# One team plays the white coins and the other plays the black coins.
-COINS_PER_COLOR = 9
+from services.match_rules import (
+    COINS_PER_COLOR,
+    coin_line_totals,
+    colour_scores,
+    is_knockout,
+    validate_lifecycle_update,
+)
 
 
 class MatchService:
@@ -28,7 +31,7 @@ class MatchService:
         if request.status != MatchStatus.Scheduled:
             raise HTTPException(status_code=400, detail="New matches must be scheduled before they can start.")
         if request.category == MatchCategory.GoldenStrike:
-            raise HTTPException(status_code=400, detail="Golden Strike is created automatically after a tied knockout match.")
+            raise HTTPException(status_code=400, detail="A Golden Strike match is created automatically for a tied league qualification place. A tied knockout match goes to its Golden Strike inside the same match.")
         if request.duration is not None or request.extra is not None or request.golden_strike:
             raise HTTPException(
                 status_code=400,
@@ -52,6 +55,14 @@ class MatchService:
         update_data = request.model_dump(exclude_unset=True)
         completing = update_data.get("status", match.status) == MatchStatus.Played.value
         clock = SettingsRepository(self.repository.db).get()
+        # A knockout result, extra time and a Golden Strike all depend on the scorecard, so the API reads it
+        # and judges them itself rather than trusting what the scorer sent.
+        needs_scorecard = is_knockout(match.category) and (
+            completing
+            or match.status == MatchStatus.Played.value
+            or update_data.get("extra") is not None
+            or bool(update_data.get("golden_strike"))
+        )
         validate_lifecycle_update(
             match,
             update_data,
@@ -59,6 +70,7 @@ class MatchService:
             regulation_seconds=clock.regulation_minutes * 60,
             extra_seconds=clock.extra_minutes * 60,
             start_on_scheduled_day=clock.start_on_scheduled_day,
+            scores=self._scorecard_scores(match) if needs_scorecard else None,
         )
         match = self.repository.update(match_id, request)
         if not match:
@@ -98,26 +110,22 @@ class MatchService:
             if derived_fines > 255:
                 raise HTTPException(status_code=400, detail="Fines for one player cannot exceed 255 coins.")
             item.coins_fined = derived_fines
-        self._validate_coin_counts(match_id, request.stats)
+        self._validate_coin_counts(match_id, request.stats, match.category)
         return self.repository.upsert_stats(match_id, request.stats)
 
     def _colour_cleared(self, match_id: int) -> bool:
-        own = {}
-        taken = {}
-        fines = {}
-        for row in self.repository.player_coin_lines(match_id):
-            team_id = int(row["TeamId"])
-            own[team_id] = own.get(team_id, 0) + int(row["CoinsPocketed"] or 0)
-            taken[team_id] = taken.get(team_id, 0) + int(row["OpponentCoinsPocketed"] or 0)
-            fines[team_id] = fines.get(team_id, 0) + int(row["SingleFines"] or 0) + 2 * int(row["DoubleFines"] or 0)
-        for team_id in own.keys() | taken.keys():
-            other_taken = sum(count for other_id, count in taken.items() if other_id != team_id)
-            off_board = max(0, own.get(team_id, 0) - fines.get(team_id, 0)) + other_taken
-            if off_board >= COINS_PER_COLOR:
-                return True
-        return False
+        scores = colour_scores(coin_line_totals(self.repository.player_coin_lines(match_id)))
+        return any(score >= COINS_PER_COLOR for score in scores.values())
 
-    def _validate_coin_counts(self, match_id: int, stats: list) -> None:
+    def _scorecard_scores(self, match):
+        """(team 1, team 2) coins off the board, or None while nothing is on the scorecard."""
+        rows = list(self.repository.player_coin_lines(match.id))
+        if not rows:
+            return None
+        scores = colour_scores(coin_line_totals(rows))
+        return scores.get(match.team1, 0), scores.get(match.team2, 0)
+
+    def _validate_coin_counts(self, match_id: int, stats: list, category: int | None = None) -> None:
         roster = {
             int(row["PlayerId"]): int(row["TeamId"])
             for row in self.repository.players_on_match_teams(match_id)
@@ -158,9 +166,13 @@ class MatchService:
         # A fine puts one of the team's pocketed coins back on the board, so it can be pocketed again.
         # A fine the team cannot pay yet is due and returns nothing.
         teams = list(own.keys() | taken.keys())
-        for team_id in teams:
-            other_taken = sum(count for other_id, count in taken.items() if other_id != team_id)
-            off_board = max(0, own.get(team_id, 0) - fines.get(team_id, 0)) + other_taken
+        scores = colour_scores(
+            {
+                team_id: {"own": own.get(team_id, 0), "opponent": taken.get(team_id, 0), "fines": fines.get(team_id, 0)}
+                for team_id in teams
+            }
+        )
+        for off_board in scores.values():
             if off_board > COINS_PER_COLOR:
                 raise HTTPException(
                     status_code=400,
@@ -169,3 +181,12 @@ class MatchService:
                         "the other team pocketed of that colour, cannot go above 9."
                     ),
                 )
+
+        # In a knockout match the first colour to be cleared ends it, so both teams can never be on 9 together.
+        if category is not None and is_knockout(category) and sum(
+            1 for off_board in scores.values() if off_board >= COINS_PER_COLOR
+        ) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Both teams cannot be on 9 at the same time in a knockout match. The first colour to clear ends the match.",
+            )
