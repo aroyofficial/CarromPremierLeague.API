@@ -332,6 +332,18 @@ class WidgetSnapshots:
         season_id: int | None,
         flow_config: WidgetFlowConfig | None = None,
     ) -> dict:
+        payload = self._build(widget_type, match_id, season_id, flow_config)
+        # The widget sets its clock from server_now, so it must be read after every query has run, not before.
+        payload["server_now"] = _utcnow().isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        return payload
+
+    def _build(
+        self,
+        widget_type: str,
+        match_id: int | None,
+        season_id: int | None,
+        flow_config: WidgetFlowConfig | None,
+    ) -> dict:
         if widget_type == "season_flow":
             return self._season_flow(season_id, flow_config or WidgetFlowConfig())
         if widget_type == "fixtures":

@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import time
 import unittest
 
 from tests import test_auth_service as fakes  # noqa: F401  (sets environment before app imports)
@@ -265,6 +266,22 @@ class WidgetTests(unittest.TestCase):
             text = json.dumps(body)
             for secret in ("token", "token_hash", "created_by", "cpl_widget_"):
                 self.assertNotIn(secret, text)
+
+    def test_server_now_is_read_after_the_slowest_query(self):
+        # The widget sets its clock from server_now. A stamp taken before slow queries makes the stream clock run behind.
+        widget = self._create(name="Flow", widget_type="season_flow", match_id=None, season_id=5)
+        slow_top_stats = self.source.top_stats
+
+        def slow(*args, **kwargs):
+            time.sleep(0.4)
+            return slow_top_stats(*args, **kwargs)
+
+        self.source.top_stats = slow
+        started = datetime.now(timezone.utc)
+        snap = self._snapshot(widget["token"]).json()["data"]
+        stamped = datetime.fromisoformat(snap["server_now"].replace("Z", "+00:00"))
+        self.assertGreaterEqual((stamped - started).total_seconds(), 0.4)
+        self.assertRegex(snap["server_now"], r"\.\d{3}Z$")
 
     def test_snapshot_match_fields_match_the_public_match_data(self):
         created = self._create()
