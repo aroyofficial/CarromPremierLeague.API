@@ -52,9 +52,15 @@ class LeagueTableStanding(BaseModel):
     head_to_head_wins: int
     golden_strike_wins: int = 0
 
+class SeasonScheduleBuildRequest(BaseModel):
+    # How many times each team plays every other team. One means a single round robin.
+    rounds: int = Field(default=1, ge=1, le=4)
+
+
 class SeasonScheduleBuildResponse(BaseModel):
     removed: int
     created: int
+    rounds: int = 1
 
 
 class LeagueTableResponse(BaseModel):

@@ -1636,7 +1636,7 @@ class ScheduleRebuildTests(unittest.TestCase):
             def __init__(self, db):
                 pass
 
-            def schedule_matches(self, season_id):
+            def schedule_matches(self, season_id, rounds=1):
                 return SimpleNamespace(removed=2, created=2)
 
         with mock.patch.object(enqueue_module, "NotifyRepository", self._repo(before, after, queued)), \
@@ -1664,7 +1664,7 @@ class ScheduleRebuildTests(unittest.TestCase):
             def __init__(self, db):
                 pass
 
-            def schedule_matches(self, season_id):
+            def schedule_matches(self, season_id, rounds=1):
                 raise HTTPException(status_code=400, detail="Add teams first.")
 
         with mock.patch.object(enqueue_module, "NotifyRepository", self._repo([_match(id=10)], [], queued)), \
@@ -1701,7 +1701,7 @@ class ScheduleRebuildTests(unittest.TestCase):
             def __init__(self, db):
                 pass
 
-            def schedule_matches(self, season_id):
+            def schedule_matches(self, season_id, rounds=1):
                 return SimpleNamespace(removed=0, created=4)
 
         with mock.patch.object(enqueue_module, "NotifyRepository", Broken), \

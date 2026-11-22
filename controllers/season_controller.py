@@ -46,8 +46,8 @@ class SeasonController:
     def remove_team(self, season_id: int, team_id: int) -> bool:
         return self.service.remove_team(season_id, team_id)
 
-    def schedule_matches(self, season_id: int):
-        return self.service.schedule_matches(season_id, self.match_repository)
+    def schedule_matches(self, season_id: int, rounds: int = 1):
+        return self.service.schedule_matches(season_id, self.match_repository, rounds=rounds)
 
     def get_league_table(self, season_id: int) -> LeagueTableResponse:
         return self.service.get_league_table(season_id)

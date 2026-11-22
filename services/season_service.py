@@ -12,7 +12,7 @@ from schemas.season_schema import (
     SeasonTeamResponse,
 )
 from repositories.season_repository import SeasonRepository
-from services.league_schedule import plan_league_schedule
+from services.league_schedule import DEFAULT_ROUNDS, plan_league_schedule
 
 
 class SeasonService:
@@ -91,17 +91,19 @@ class SeasonService:
             raise HTTPException(status_code=404, detail="Team is not part of this season")
         return True
 
-    def schedule_matches(self, season_id: int, match_repository, today=None) -> SeasonScheduleBuildResponse:
+    def schedule_matches(
+        self, season_id: int, match_repository, today=None, rounds: int = DEFAULT_ROUNDS
+    ) -> SeasonScheduleBuildResponse:
         season = self.get_season(season_id)
         if today is None:
             today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
         teams = [team.team_id for team in self.get_teams(season_id)]
         try:
-            pairs = plan_league_schedule(teams, match_repository.get_all(season_id), season.start_date, today)
+            pairs = plan_league_schedule(teams, match_repository.get_all(season_id), season.start_date, today, rounds)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from None
         removed, created = match_repository.replace_unplayed_matches(season_id, pairs, season.start_date)
-        return SeasonScheduleBuildResponse(removed=removed, created=created)
+        return SeasonScheduleBuildResponse(removed=removed, created=created, rounds=rounds)
 
     def get_league_table(self, season_id: int) -> LeagueTableResponse:
         if season_id <= 0:

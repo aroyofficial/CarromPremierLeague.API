@@ -73,6 +73,61 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(scheduled, pairs_of(teams) - {frozenset((1, 2)), frozenset((3, 4))})
         self.assertTrue(set(pairings[0]).isdisjoint({3, 4}))
 
+    def test_one_round_is_the_default(self):
+        teams = [1, 2, 3, 4, 5]
+        self.assertEqual(
+            plan_league_schedule(teams, [], self.upcoming, self.today),
+            plan_league_schedule(teams, [], self.upcoming, self.today, rounds=1),
+        )
+
+    def test_each_pair_plays_as_many_times_as_asked(self):
+        teams = [1, 2, 3, 4, 5, 6]
+        for rounds in (2, 3, 4):
+            pairings = plan_league_schedule(teams, [], self.upcoming, self.today, rounds=rounds)
+            counts = {}
+            for pair in pairings:
+                counts[frozenset(pair)] = counts.get(frozenset(pair), 0) + 1
+            self.assertEqual(set(counts), pairs_of(teams))
+            self.assertEqual(set(counts.values()), {rounds})
+            self.assertEqual(len(pairings), 15 * rounds)
+            self.assertEqual(consecutive(pairings), 0)
+
+    def test_a_repeat_swaps_the_sides(self):
+        pairings = plan_league_schedule([1, 2, 3, 4], [], self.upcoming, self.today, rounds=2)
+        self.assertEqual(len(pairings), 12)
+        sides = {}
+        for home, away in pairings:
+            sides.setdefault(frozenset((home, away)), []).append(home)
+        self.assertTrue(all(len(set(homes)) == 2 for homes in sides.values()))
+
+    def test_started_matches_count_towards_the_total_when_rescheduling(self):
+        teams = [1, 2, 3, 4]
+        existing = [
+            match(1, 1, 2, status=3, order=1),
+            match(2, 1, 2, status=2, order=2),
+            match(3, 3, 4, status=3, order=3),
+            match(4, 1, 3, status=1, order=4),
+        ]
+        pairings = plan_league_schedule(teams, existing, self.upcoming, self.today, rounds=2)
+        remaining = {}
+        for pair in pairings:
+            remaining[frozenset(pair)] = remaining.get(frozenset(pair), 0) + 1
+        self.assertNotIn(frozenset((1, 2)), remaining)
+        self.assertEqual(remaining[frozenset((3, 4))], 1)
+        self.assertEqual(remaining[frozenset((1, 3))], 2)
+        self.assertEqual(len(pairings), 9)
+
+    def test_fewer_rounds_than_already_played_adds_nothing_for_that_pair(self):
+        existing = [match(1, 1, 2, status=3, order=1), match(2, 1, 2, status=3, order=2)]
+        pairings = plan_league_schedule([1, 2, 3, 4], existing, self.upcoming, self.today, rounds=1)
+        self.assertNotIn(frozenset((1, 2)), {frozenset(pair) for pair in pairings})
+
+    def test_rounds_outside_the_range_are_rejected(self):
+        for rounds in (0, -1, 5, 1.5, True, None):
+            with self.assertRaises(ValueError) as error:
+                plan_league_schedule([1, 2, 3, 4], [], self.upcoming, self.today, rounds=rounds)
+            self.assertIn("times", str(error.exception))
+
     def test_a_played_knockout_does_not_remove_the_league_pairing(self):
         pairings = plan_league_schedule(
             [1, 2, 3, 4],

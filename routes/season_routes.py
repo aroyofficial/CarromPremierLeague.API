@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from typing import List
+from typing import List, Optional
 
 from core.database import get_db
 from core.response import ApiResponse
@@ -15,6 +15,7 @@ from schemas.season_schema import (
     LeagueTableResponse,
     SeasonTeamAddRequest,
     SeasonTeamResponse,
+    SeasonScheduleBuildRequest,
     SeasonScheduleBuildResponse,
 )
 
@@ -145,9 +146,14 @@ def remove_season_team(season_id: int, team_id: int, db=Depends(get_db)):
     response_model=ApiResponse[SeasonScheduleBuildResponse],
     dependencies=[Depends(require_permission("matches.create"))]
 )
-def schedule_season_matches(season_id: int, db=Depends(get_db)):
+def schedule_season_matches(
+    season_id: int,
+    request: Optional[SeasonScheduleBuildRequest] = None,
+    db=Depends(get_db),
+):
+    rounds = request.rounds if request else 1
     removed = season_scheduled(db, season_id)
-    result = SeasonController(db).schedule_matches(season_id)
+    result = SeasonController(db).schedule_matches(season_id, rounds)
     publish_schedule_rebuild(db, season_id, removed)
     publish_webhook_event(db, "season.schedule_rebuilt", {"season_id": season_id, "schedule": result})
     message = "League matches scheduled" if result.removed == 0 else "League matches rescheduled"

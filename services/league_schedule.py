@@ -1,9 +1,12 @@
 """League fixture order for one season.
 
-Every pair of teams plays once. A team is kept off the next match when another
-remaining pairing allows it. A started league match is not paired again.
+Every pair of teams plays the same number of times (one by default). A team is
+kept off the next match when another remaining pairing allows it. A league match
+that has started or finished counts towards its pair's total and is not paired
+again.
 """
 
+from collections import Counter
 from datetime import date
 
 
@@ -12,8 +15,12 @@ IN_PROGRESS = 2
 PLAYED = 3
 LEAGUE = 1
 
+DEFAULT_ROUNDS = 1
+MAX_ROUNDS = 4
+
 UPCOMING_REQUIRED = "Matches can be scheduled only for an upcoming season."
 TEAMS_REQUIRED = "A season needs at least four teams before matches can be scheduled."
+ROUNDS_INVALID = f"Each team can play another team between {DEFAULT_ROUNDS} and {MAX_ROUNDS} times."
 
 
 def _shares(left, right) -> bool:
@@ -74,18 +81,26 @@ def _separate(sequence: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return ordered
 
 
-def league_pairings(team_ids, blocked=(), previous=()) -> list[tuple[int, int]]:
+def league_pairings(team_ids, blocked=(), previous=(), rounds: int = DEFAULT_ROUNDS) -> list[tuple[int, int]]:
+    """Every pair `rounds` times, minus the meetings already in `blocked` (one entry per meeting)."""
     teams = sorted({int(team_id) for team_id in team_ids})
-    blocked_pairs = {frozenset(int(team) for team in pair) for pair in blocked}
+    already = Counter(frozenset(int(team) for team in pair) for pair in blocked)
     sequence = []
     prior = tuple(int(team) for team in previous)
-    for round_matches in _circle_rounds(teams):
-        kept = [match for match in round_matches if frozenset(match) not in blocked_pairs]
-        if not kept:
-            continue
-        ordered = _rotate_away(kept, prior)
-        sequence.extend(ordered)
-        prior = ordered[-1]
+    for cycle in range(rounds):
+        cycle_sequence = []
+        for round_matches in _circle_rounds(teams):
+            # A pair still owes this cycle when its earlier meetings do not already cover it.
+            kept = [match for match in round_matches if already[frozenset(match)] < rounds - cycle]
+            if not kept:
+                continue
+            ordered = _rotate_away(kept, prior)
+            cycle_sequence.extend(ordered)
+            prior = ordered[-1]
+        # Each repeat swaps the sides, so a team is not always first on the card against the same opponent.
+        if cycle % 2 == 1:
+            cycle_sequence = [(away, home) for home, away in cycle_sequence]
+        sequence.extend(cycle_sequence)
     return _separate(sequence)
 
 
@@ -93,12 +108,14 @@ def _kept_matches(matches):
     return [match for match in matches if int(match.status) != SCHEDULED]
 
 
-def plan_league_schedule(team_ids, matches, start_date: date | None, today: date):
+def plan_league_schedule(team_ids, matches, start_date: date | None, today: date, rounds: int = DEFAULT_ROUNDS):
     if start_date is None or start_date <= today:
         raise ValueError(UPCOMING_REQUIRED)
     teams = sorted({int(team_id) for team_id in team_ids})
     if len(teams) < 4:
         raise ValueError(TEAMS_REQUIRED)
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or not DEFAULT_ROUNDS <= rounds <= MAX_ROUNDS:
+        raise ValueError(ROUNDS_INVALID)
 
     blocked = []
     previous = ()
@@ -114,4 +131,4 @@ def plan_league_schedule(team_ids, matches, start_date: date | None, today: date
             continue
         blocked.append((int(match.team1), int(match.team2)))
 
-    return league_pairings(teams, blocked, previous)
+    return league_pairings(teams, blocked, previous, rounds)
